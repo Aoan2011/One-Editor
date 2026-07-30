@@ -74,12 +74,14 @@ class LspClient:
                 "textDocument": {
                     "completion": {
                         "completionItem": {"snippetSupport": False},
-                        "additionalTextEdits": True,  # 支持自动添加头文件
+                        "additionalTextEdits": True,
                     },
                     "definition": {"dynamicRegistration": False},
                     "hover": {"dynamicRegistration": False},
                     "documentSymbol": {"dynamicRegistration": False},
                     "publishDiagnostics": {"dynamicRegistration": False},
+                    "codeAction": {"dynamicRegistration": False},
+                    "rename": {"dynamicRegistration": False},
                 },
                 "workspace": {"didChangeWatchedFiles": {"dynamicRegistration": False}},
             },
@@ -153,12 +155,29 @@ class LspClient:
                 "label": item.get("label", ""),
                 "insertText": item.get("insertText") or item.get("label", ""),
             }
-            # 如果有 additionalTextEdits，一并返回
             if "additionalTextEdits" in item:
                 comp["additionalTextEdits"] = item["additionalTextEdits"]
+            if "insertTextFormat" in item:
+                comp["insertTextFormat"] = item["insertTextFormat"]
             completions.append(comp)
         return completions
 
+    async def format_document(self) -> List[Dict[str, Any]]:
+        if not self._uri or not self.running:
+            return []
+        try:
+            result = await asyncio.wait_for(
+                self._request("textDocument/formatting", {
+                    "textDocument": {"uri": self._uri},
+                    "options": {"tabSize": 4, "insertSpaces": True},
+                }),
+                timeout=5,
+            )
+        except Exception:
+            return []
+        if not result:
+            return []
+        return result
     async def goto_definition(self, line: int, col: int) -> Optional[Dict[str, Any]]:
         if not self._uri or not self.running:
             return None
@@ -243,6 +262,43 @@ class LspClient:
 
     def set_diagnostics_callback(self, callback):
         self._diag_callback = callback
+
+    async def code_action(self, line: int, col: int) -> List[Dict[str, Any]]:
+        if not self._uri or not self.running:
+            return []
+        try:
+            result = await asyncio.wait_for(
+                self._request("textDocument/codeAction", {
+                    "textDocument": {"uri": self._uri},
+                    "range": {
+                        "start": {"line": line, "character": col},
+                        "end": {"line": line, "character": col},
+                    },
+                    "context": {"diagnostics": self._diagnostics.get(self._uri, [])},
+                }),
+                timeout=5,
+            )
+        except Exception:
+            return []
+        if not result:
+            return []
+        return result
+
+    async def rename(self, line: int, col: int, new_name: str) -> Optional[Dict[str, Any]]:
+        if not self._uri or not self.running:
+            return None
+        try:
+            result = await asyncio.wait_for(
+                self._request("textDocument/rename", {
+                    "textDocument": {"uri": self._uri},
+                    "position": {"line": line, "character": col},
+                    "newName": new_name,
+                }),
+                timeout=5,
+            )
+        except Exception:
+            return None
+        return result
 
     async def _request(self, method: str, params: Any):
         self._id += 1

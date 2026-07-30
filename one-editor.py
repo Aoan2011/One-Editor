@@ -9,7 +9,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
 from textual.widgets import (
     Header, Footer, TextArea, Button, Static, Input, Label,
-    DirectoryTree, OptionList, Select
+    DirectoryTree, OptionList, Select, Checkbox, ListItem, ListView
 )
 from textual.widgets.option_list import Option
 from textual.binding import Binding
@@ -17,6 +17,8 @@ from textual.screen import Screen, ModalScreen
 from textual import events
 from textual.widgets.tree import TreeNode
 from textual.geometry import Offset
+from textual import on
+from textual.reactive import reactive
 
 # ---------- LSP 模块 ----------
 from lsp import LspClient, LANG_SERVERS, path_to_uri, uri_to_path
@@ -25,6 +27,7 @@ from lsp import LspClient, LANG_SERVERS, path_to_uri, uri_to_path
 CONFIG_DIR = Path.home() / ".one-editor"
 CONFIG_FILE = CONFIG_DIR / "state.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
+PLUGIN_CONFIG_FILE = CONFIG_DIR / "plugins.json"
 CLIPBOARD = {"path": None, "is_cut": False}
 
 # ---------- 语言映射 ----------
@@ -116,12 +119,117 @@ class ConfirmScreen(Screen):
             self.dismiss()
 
 
+class ExternalChangeScreen(ModalScreen):
+    """文件被外部修改时的提示"""
+    CSS = """
+    ExternalChangeScreen {
+        background: rgba(0,0,0,0.6);
+        align: center middle;
+    }
+    #container {
+        background: $surface;
+        padding: 2 3;
+        border: tall $primary;
+        width: 50;
+        height: auto;
+    }
+    #container > Button {
+        margin: 1 1;
+        width: 1fr;
+    }
+    """
+    def __init__(self, filepath, callback):
+        super().__init__()
+        self.filepath = filepath
+        self.callback = callback
+
+    def compose(self):
+        with Container(id="container"):
+            yield Label(f"文件 {Path(self.filepath).name} 已被外部修改", id="msg")
+            yield Label("是否重新加载？")
+            with Horizontal():
+                yield Button("重新加载", variant="primary", id="reload")
+                yield Button("忽略", id="ignore")
+
+    def on_button_pressed(self, event):
+        if event.button.id == "reload":
+            self.callback(True)
+        else:
+            self.callback(False)
+        self.dismiss()
+
+
+# ---------- 统一风格的选项列表菜单（用于右键菜单、代码大纲、快速修复等） ----------
+class OptionListMenu(ModalScreen):
+    """通用选项列表菜单，类似于补全菜单样式"""
+    CSS = """
+    OptionListMenu {
+        background: rgba(0,0,0,0.6);
+        align: center middle;
+    }
+    #menu-container {
+        background: $surface;
+        padding: 1 2;
+        border: round $accent;
+        width: auto;
+        min-width: 30;
+        max-width: 60;
+        height: auto;
+        max-height: 20;
+        overflow-y: auto;
+    }
+    .menu-item {
+        width: 1fr;
+        padding: 0 1;
+        height: 1;
+        background: $surface;
+        border: none;
+        text-align: left;
+    }
+    .menu-item:hover {
+        background: $panel;
+    }
+    .menu-item .shortcut {
+        color: $text-muted;
+        margin-left: 2;
+    }
+    """
+
+    def __init__(self, title: str, items: list, callback):
+        """
+        items: [{"label": str, "action": callable, "shortcut": str}]
+        """
+        super().__init__()
+        self.title = title
+        self.items = items
+        self.callback = callback
+
+    def compose(self):
+        with Container(id="menu-container"):
+            if self.title:
+                yield Label(self.title, classes="title")
+            for i, item in enumerate(self.items):
+                label = item["label"]
+                shortcut = item.get("shortcut", "")
+                btn = Button(label, id=f"menu_{i}", classes="menu-item")
+                if shortcut:
+                    btn.label = f"{label}  ({shortcut})"
+                yield btn
+
+    def on_button_pressed(self, event):
+        idx = int(event.button.id.split("_")[1])
+        if idx < len(self.items):
+            self.callback(self.items[idx]["action"])
+        self.dismiss()
+
+
 # ---------- 自定义编辑器 ----------
 class AxiomEditor(TextArea):
     def on_mount(self):
         self.indent_width = 4
         self.indent_type = "spaces"
         self.tab_behavior = "indent"
+        self.multicursor = True
 
     async def _on_key(self, event):
         # 处理补全菜单键盘导航
@@ -133,12 +241,12 @@ class AxiomEditor(TextArea):
                         menu.move_up()
                     elif event.key == "down":
                         menu.move_down()
-                    elif event.key == "tab":          # 只有 Tab 插入补全
+                    elif event.key == "tab":
                         item = menu.selected_item()
                         if item:
                             self.app._insert_completion(item)
                         menu.hide()
-                    elif event.key == "enter":        # Enter 只关闭菜单，不插入
+                    elif event.key == "enter":
                         menu.hide()
                     event.prevent_default()
                     event.stop()
@@ -310,130 +418,72 @@ class FindReplaceBar(Horizontal):
             self.replace_input.focus()
 
 
-# ---------- 右键菜单 ----------
-class FileTreeContextMenu(ModalScreen):
-    CSS = """
-    FileTreeContextMenu {
-        background: rgba(0,0,0,0.6);
-        align: center middle;
-    }
-    #menu-container {
-        background: $surface;
-        padding: 1 2;
-        border: tall $primary;
-        width: auto;
-        height: auto;
-        min-width: 20;
-    }
-    #menu-container > Button {
-        margin: 1 0;
-        width: 100%;
-    }
-    """
+# ---------- 右键菜单（使用 OptionListMenu） ----------
+class EditorContextMenu(OptionListMenu):
+    def __init__(self, text_area):
+        self.text_area = text_area
+        items = [
+            {"label": "撤销", "action": "undo", "shortcut": "Ctrl+Z"},
+            {"label": "重做", "action": "redo", "shortcut": "Ctrl+Y"},
+            {"label": "剪切", "action": "cut", "shortcut": "Ctrl+X"},
+            {"label": "复制", "action": "copy", "shortcut": "Ctrl+C"},
+            {"label": "粘贴", "action": "paste", "shortcut": "Ctrl+V"},
+            {"label": "全选", "action": "select_all", "shortcut": "Ctrl+A"},
+            {"label": "保存", "action": "save", "shortcut": "Ctrl+S"},
+            {"label": "另存为...", "action": "save_as", "shortcut": "Ctrl+Shift+S"},
+            {"label": "关闭标签", "action": "close", "shortcut": "Ctrl+W"},
+            {"label": "格式化文档", "action": "format", "shortcut": "Ctrl+Shift+F"},
+        ]
+        def callback(action):
+            if action == "undo":
+                self.text_area.undo()
+            elif action == "redo":
+                self.text_area.redo()
+            elif action == "cut":
+                self.text_area.cut()
+            elif action == "copy":
+                self.text_area.copy()
+            elif action == "paste":
+                clipboard = self.app.clipboard
+                if clipboard:
+                    self.text_area.insert_text(clipboard)
+            elif action == "select_all":
+                self.text_area.select_all()
+            elif action == "save":
+                self.app.action_save_file()
+            elif action == "save_as":
+                self.app.action_save_as()
+            elif action == "close":
+                self.app.action_close_file()
+            elif action == "format":
+                self.app.action_format_document()
+        super().__init__("编辑器", items, callback)
 
-    def __init__(self, path: Path, is_file: bool):
-        super().__init__()
+
+class FileTreeContextMenu(OptionListMenu):
+    def __init__(self, path, is_file):
         self.path = path
         self.is_file = is_file
-
-    def compose(self) -> ComposeResult:
-        with Container(id="menu-container"):
-            yield Button("新建文件", id="new_file")
-            yield Button("新建文件夹", id="new_folder")
-            if self.is_file:
-                yield Button("打开", id="open")
-            else:
-                yield Button("打开文件夹", id="open_dir")
-            yield Button("重命名", id="rename")
-            yield Button("移动至...", id="move_to")
-            yield Button("复制", id="copy")
-            yield Button("粘贴", id="paste")
-            yield Button("删除", id="delete")
-            yield Button("取消", id="cancel")
-
-    def on_button_pressed(self, event: Button.Pressed):
-        action_map = {
-            "new_file": "file",
-            "new_folder": "folder",
-            "open": "open",
-            "open_dir": "open_dir",
-            "rename": "rename",
-            "move_to": "move_to",
-            "copy": "copy",
-            "paste": "paste",
-            "delete": "delete",
-            "cancel": None,
-        }
-        self.dismiss(action_map.get(event.button.id))
-
-
-class EditorContextMenu(ModalScreen):
-    CSS = """
-    EditorContextMenu {
-        background: rgba(0,0,0,0.6);
-        align: center middle;
-    }
-    #menu-container {
-        background: $surface;
-        padding: 1 2;
-        border: tall $primary;
-        width: auto;
-        height: auto;
-        min-width: 20;
-    }
-    #menu-container > Button {
-        margin: 1 0;
-        width: 100%;
-    }
-    """
-
-    def __init__(self, text_area: TextArea):
-        super().__init__()
-        self.text_area = text_area
-
-    def compose(self) -> ComposeResult:
-        with Container(id="menu-container"):
-            yield Button("撤销", id="undo")
-            yield Button("重做", id="redo")
-            yield Button("剪切", id="cut")
-            yield Button("复制", id="copy")
-            yield Button("粘贴", id="paste")
-            yield Button("全选", id="select_all")
-            yield Button("保存", id="save")
-            yield Button("另存为...", id="save_as")
-            yield Button("关闭标签", id="close")
-            yield Button("取消", id="cancel")
-
-    def on_button_pressed(self, event: Button.Pressed):
-        btn_id = event.button.id
-        if btn_id == "undo":
-            self.text_area.undo()
-            self.dismiss()
-        elif btn_id == "redo":
-            self.text_area.redo()
-            self.dismiss()
-        elif btn_id == "cut":
-            self.text_area.cut()
-            self.dismiss()
-        elif btn_id == "copy":
-            self.text_area.copy()
-            self.dismiss()
-        elif btn_id == "paste":
-            clipboard_text = self.app.clipboard
-            if clipboard_text:
-                self.text_area.insert_text(clipboard_text)
-            self.dismiss()
-        elif btn_id == "select_all":
-            self.text_area.select_all()
-            self.dismiss()
-        elif btn_id == "save":
-            self.dismiss(("save", None))
-        elif btn_id == "save_as":
-            self.dismiss(("save_as", None))
-        elif btn_id == "close":
-            self.dismiss(("close", None))
-        elif btn_id == "cancel":
-            self.dismiss(None)
+        items = [
+            {"label": "新建文件", "action": "new_file"},
+            {"label": "新建文件夹", "action": "new_folder"},
+        ]
+        if self.is_file:
+            items.append({"label": "打开", "action": "open"})
+        else:
+            items.append({"label": "打开文件夹", "action": "open_dir"})
+        items.extend([
+            {"label": "重命名", "action": "rename", "shortcut": "F2"},
+            {"label": "移动至...", "action": "move_to"},
+            {"label": "复制", "action": "copy"},
+            {"label": "粘贴", "action": "paste"},
+            {"label": "删除", "action": "delete", "shortcut": "Del"},
+        ])
+        def callback(action):
+            app = self.app
+            app._context_path = self.path
+            app._filetree_menu_callback(action)
+        super().__init__("文件树", items, callback)
 
 
 # ---------- 顶部菜单栏 ----------
@@ -442,71 +492,27 @@ class TopMenuBar(Horizontal):
         yield Button("文件", id="menu_file", classes="menu-btn")
         yield Button("编辑", id="menu_edit", classes="menu-btn")
         yield Button("工具", id="menu_tools", classes="menu-btn")
+        yield Button("插件", id="menu_plugins", classes="menu-btn")
 
 
-# ---------- 代码大纲 ----------
-class SymbolListScreen(ModalScreen):
-    CSS = """
-    SymbolListScreen {
-        background: rgba(0,0,0,0.6);
-        align: center middle;
-    }
-    #symbol-container {
-        background: $surface;
-        padding: 1 2;
-        border: tall $primary;
-        width: 60;
-        height: 30;
-        overflow-y: auto;
-    }
-    #symbol-container > Button {
-        width: 100%;
-        margin: 0;
-        padding: 0 1;
-        text-align: left;
-    }
-    .symbol-btn {
-        background: $surface;
-        border: none;
-        height: 1;
-    }
-    .symbol-btn:hover {
-        background: $panel;
-    }
-    """
-
+# ---------- 代码大纲（使用 OptionListMenu） ----------
+class SymbolListScreen(OptionListMenu):
     def __init__(self, symbols, app):
-        super().__init__()
         self.symbols = symbols
         self.app_ref = app
-
-    def compose(self) -> ComposeResult:
-        with Container(id="symbol-container"):
-            yield Label("符号列表 (点击跳转)", classes="title")
-            if not self.symbols:
-                yield Label("没有符号")
-            else:
-                for i, sym in enumerate(self.symbols):
-                    yield Button(
-                        f"{sym['name']}  (行 {sym['line']+1})",
-                        id=f"sym_{i}",
-                        classes="symbol-btn"
-                    )
-
-    def on_button_pressed(self, event: Button.Pressed):
-        if event.button.id.startswith("sym_"):
-            idx = int(event.button.id.split("_")[1])
-            if idx < len(self.symbols):
-                sym = self.symbols[idx]
-                self.app_ref._jump_to_symbol(sym["line"], sym["col"])
-                self.dismiss()
-
-    def on_key(self, event):
-        if event.key == "escape":
-            self.dismiss()
+        items = []
+        for sym in symbols:
+            items.append({
+                "label": f"{sym['name']}  (行 {sym['line']+1})",
+                "action": sym,
+                "shortcut": ""
+            })
+        def callback(sym):
+            app_ref._jump_to_symbol(sym["line"], sym["col"])
+        super().__init__("符号列表", items, callback)
 
 
-# ---------- 诊断信息 ----------
+# ---------- 诊断信息（优化 UI） ----------
 class DiagnosticScreen(Screen):
     CSS = """
     DiagnosticScreen {
@@ -516,13 +522,14 @@ class DiagnosticScreen(Screen):
     #diag-container {
         background: $surface;
         padding: 1 2;
-        border: tall $primary;
+        border: round $accent;
         width: 70;
         height: 30;
         overflow-y: auto;
     }
     .diag-item {
         margin: 0 0 1 0;
+        padding: 0 1;
     }
     .diag-error {
         color: $error;
@@ -691,7 +698,7 @@ class FileBrowserPanel(Vertical):
         self.input.focus()
 
 
-# ---------- 设置页面 ----------
+# ---------- 设置页面（完善） ----------
 class SettingsScreen(Screen):
     CSS = """
     SettingsScreen {
@@ -701,18 +708,23 @@ class SettingsScreen(Screen):
     #settings-container {
         background: $surface;
         padding: 1 2;
-        border: tall $primary;
-        width: 50;
+        border: round $accent;
+        width: 60;
         height: auto;
+        max-height: 80%;
+        overflow-y: auto;
     }
     #settings-container > Label {
         margin: 1 0;
     }
-    #settings-container > Select, #settings-container > Input {
+    #settings-container > Select, #settings-container > Input, #settings-container > Checkbox {
         margin: 0 0 1 0;
     }
+    .settings-row {
+        height: 3;
+        padding: 0 1;
+    }
     """
-
     def __init__(self, app):
         super().__init__()
         self.app_ref = app
@@ -722,7 +734,8 @@ class SettingsScreen(Screen):
             yield Label("设置", classes="title")
             yield Label("主题:")
             self.theme_select = Select(
-                [("textual-dark", "dark"), ("textual-light", "light"), ("dracula", "dracula"), ("nord", "nord")],
+                [("textual-dark", "textual-dark"), ("textual-light", "textual-light"),
+                 ("dracula", "dracula"), ("nord", "nord")],
                 prompt="选择主题",
                 value=self.app_ref.theme
             )
@@ -730,14 +743,21 @@ class SettingsScreen(Screen):
             yield Label("缩进空格数:")
             self.indent_input = Input(value=str(self.app_ref._indent_width or 4), type="integer")
             yield self.indent_input
+            yield Label("自动保存间隔(秒):")
+            self.autosave_input = Input(value=str(getattr(self.app_ref, "_autosave_interval", 0)), type="integer")
+            yield self.autosave_input
+            yield Checkbox("显示行号", value=self.app_ref._show_line_numbers)
+            yield Label("保存设置:")
             yield Button("保存", variant="primary", id="save-settings")
             yield Button("取消", id="cancel-settings")
 
     def on_button_pressed(self, event):
         if event.button.id == "save-settings":
+            # 保存主题
             new_theme = self.theme_select.value
             if new_theme:
                 self.app_ref.theme = new_theme
+            # 缩进
             try:
                 indent = int(self.indent_input.value)
                 if indent > 0:
@@ -746,6 +766,17 @@ class SettingsScreen(Screen):
                         data["textarea"].indent_width = indent
             except ValueError:
                 pass
+            # 自动保存
+            try:
+                interval = int(self.autosave_input.value)
+                self.app_ref._autosave_interval = interval
+            except ValueError:
+                pass
+            # 行号
+            show_line_numbers = self.query_one(Checkbox).value
+            self.app_ref._show_line_numbers = show_line_numbers
+            for data in self.app_ref._tab_data.values():
+                data["textarea"].show_line_numbers = show_line_numbers
             self.dismiss()
         else:
             self.dismiss()
@@ -753,6 +784,151 @@ class SettingsScreen(Screen):
     def on_key(self, event):
         if event.key == "escape":
             self.dismiss()
+
+
+# ---------- 插件页面 ----------
+class PluginsScreen(Screen):
+    CSS = """
+    PluginsScreen {
+        background: rgba(0,0,0,0.6);
+        align: center middle;
+    }
+    #plugins-container {
+        background: $surface;
+        padding: 1 2;
+        border: round $accent;
+        width: 70;
+        height: auto;
+        max-height: 80%;
+        overflow-y: auto;
+    }
+    .plugin-item {
+        height: 3;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        background: $panel;
+        border: none;
+    }
+    .plugin-item:hover {
+        background: $surface;
+    }
+    .plugin-name {
+        width: 15;
+        text-style: bold;
+    }
+    .plugin-status {
+        width: 10;
+    }
+    .plugin-features {
+        width: 1fr;
+    }
+    .toggle-btn {
+        width: 10;
+        border: none;
+        background: $primary;
+        color: $text;
+    }
+    .toggle-btn.off {
+        background: $surface;
+        color: $text-muted;
+    }
+    #plugins-close {
+        dock: right;
+        border: none;
+        background: $surface;
+        color: $text;
+    }
+    #plugins-close:hover {
+        background: $error;
+        color: $text;
+    }
+    """
+    def __init__(self, app):
+        super().__init__()
+        self.app_ref = app
+        self.plugin_config = self._load_config()
+
+    def _load_config(self):
+        default_config = {}
+        for lang in LANG_SERVERS.keys():
+            default_config[lang] = {
+                "enabled": True,
+                "features": {
+                    "completion": True,
+                    "definition": True,
+                    "hover": True,
+                    "diagnostics": True,
+                    "rename": True,
+                    "code_action": True,
+                }
+            }
+        if PLUGIN_CONFIG_FILE.exists():
+            try:
+                with open(PLUGIN_CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    # 合并默认值
+                    for lang in default_config:
+                        if lang in config:
+                            default_config[lang].update(config[lang])
+                    return default_config
+            except:
+                pass
+        return default_config
+
+    def _save_config(self):
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(PLUGIN_CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.plugin_config, f, indent=2)
+        except:
+            pass
+
+    def compose(self):
+        with Container(id="plugins-container"):
+            yield Horizontal(
+                Label("插件管理", id="plugins-title"),
+                Button("✕", id="plugins-close")
+            )
+            for lang, config in self.plugin_config.items():
+                server = LANG_SERVERS.get(lang, ["未安装"])
+                installed = shutil.which(server[0]) is not None if server else False
+                features = config.get("features", {})
+                status = "✅ 已启用" if config.get("enabled", True) else "❌ 已禁用"
+                with Container(classes="plugin-item"):
+                    yield Horizontal(
+                        Label(lang, classes="plugin-name"),
+                        Label(status, classes="plugin-status"),
+                        Label(f"服务器: {server[0]}", classes="plugin-features"),
+                        Button("启用/禁用", id=f"toggle_{lang}", classes="toggle-btn"),
+                    )
+                    # 显示功能开关
+                    with Horizontal(classes="feature-row"):
+                        for feature, enabled in features.items():
+                            yield Checkbox(feature, value=enabled, id=f"feature_{lang}_{feature}")
+            yield Button("保存插件配置", variant="primary", id="save-plugins")
+            yield Button("取消", id="cancel-plugins")
+
+    def on_button_pressed(self, event):
+        if event.button.id == "plugins-close" or event.button.id == "cancel-plugins":
+            self.dismiss()
+        elif event.button.id.startswith("toggle_"):
+            lang = event.button.id.split("_")[1]
+            self.plugin_config[lang]["enabled"] = not self.plugin_config[lang]["enabled"]
+            self.dismiss()
+            self.push_screen(PluginsScreen(self.app_ref))
+        elif event.button.id == "save-plugins":
+            # 收集所有复选框状态
+            for lang in self.plugin_config:
+                for feature in self.plugin_config[lang].get("features", {}):
+                    checkbox_id = f"feature_{lang}_{feature}"
+                    try:
+                        checkbox = self.query_one(f"#{checkbox_id}", Checkbox)
+                        self.plugin_config[lang]["features"][feature] = checkbox.value
+                    except:
+                        pass
+            self._save_config()
+            self.dismiss()
+            self.app_ref.notify("插件配置已保存", severity="information")
 
 
 # ---------- 主编辑器 ----------
@@ -777,6 +953,9 @@ class OneEditor(App):
         Binding("ctrl+shift+o", "show_symbols", "代码大纲", show=True),
         Binding("ctrl+shift+i", "show_hover", "悬停提示", show=True),
         Binding("ctrl+shift+e", "show_diagnostics", "诊断信息", show=True),
+        Binding("ctrl+shift+r", "rename_symbol", "重命名符号", show=True),
+        Binding("ctrl+shift+a", "code_action", "快速修复", show=True),
+        Binding("ctrl+shift+f", "format_document", "格式化文档", show=True),
         Binding("escape", "hide_find_replace", "隐藏查找栏", show=False),
     ]
 
@@ -830,6 +1009,7 @@ class OneEditor(App):
         color: $text;
         border: none;
         height: 1;
+        margin: 0;
     }
     .tab-button:hover {
         background: $panel;
@@ -847,6 +1027,10 @@ class OneEditor(App):
         border: none;
         height: 1;
         min-width: 1;
+        display: none;
+    }
+    .tab-button-container:hover .tab-close {
+        display: block;
     }
     .tab-close:hover {
         background: $error;
@@ -931,6 +1115,16 @@ class OneEditor(App):
         background: $surface;
         padding: 0;
     }
+    .tree-resize-handle {
+        width: 3;
+        background: $surface;
+        border-right: tall $primary;
+    }
+    #tree-container {
+        height: 1fr;
+        width: 30;
+        background: $surface;
+    }
     """
 
     def compose(self) -> ComposeResult:
@@ -946,13 +1140,15 @@ class OneEditor(App):
         self.file_browser.id = "file-browser"
         yield self.file_browser
         with Horizontal(id="main-layout"):
-            self.file_tree = DirectoryTree(Path(".").resolve())
-            self.file_tree.id = "sidebar"
-            yield self.file_tree
+            with Container(id="tree-container"):
+                self.file_tree = DirectoryTree(Path(".").resolve())
+                self.file_tree.id = "sidebar"
+                yield self.file_tree
+            self.resize_handle = Static(classes="tree-resize-handle")
+            yield self.resize_handle
             with Vertical(id="editor-area"):
                 self.content_container = Container(id="content-container")
                 yield self.content_container
-                # 补全菜单放在编辑器区域，与编辑器同级
                 self.completion_menu = CompletionMenu()
                 yield self.completion_menu
         self.status_bar = Static(id="status-bar")
@@ -978,8 +1174,14 @@ class OneEditor(App):
         self._current_lang = None
         self._completion_timer = None
         self._indent_width = 4
+        self._show_line_numbers = True
+        self._autosave_interval = 0
         self._diagnostics_cache = {}
         self._current_uri = None
+        self._file_mtime_cache = {}
+        self._tree_width = 30
+        self._load_tree_width()
+        self._is_resizing = False
         self.lsp = LspClient()
         self.lsp.set_diagnostics_callback(self._on_diagnostics)
 
@@ -997,60 +1199,254 @@ class OneEditor(App):
 
         self.file_tree.display = self._show_file_tree
         self.file_tree.focus()
+        self._apply_tree_width()
 
-    # ---------- 辅助 ----------
-    def _get_file_encoding_and_ending(self, filepath):
-        encoding = "UTF-8"
-        line_ending = "LF"
-        if filepath and Path(filepath).exists():
+        if self._autosave_interval > 0:
+            self.set_timer(self._autosave_interval, self._autosave)
+        self.set_timer(2, self._check_external_changes)
+
+    # ---------- 自动保存 ----------
+    def _autosave(self):
+        for tid, data in self._tab_data.items():
+            if self._modified.get(tid, False) and data.get("filepath"):
+                self.action_save_file()
+        if self._autosave_interval > 0:
+            self.set_timer(self._autosave_interval, self._autosave)
+
+    # ---------- 文件树宽度 ----------
+    def _load_tree_width(self):
+        if CONFIG_FILE.exists():
             try:
-                with open(filepath, "rb") as f:
-                    raw = f.read()
-                    if raw.startswith(b'\xef\xbb\xbf'):
-                        encoding = "UTF-8-BOM"
-                    elif raw.startswith(b'\xff\xfe'):
-                        encoding = "UTF-16-LE"
-                    elif raw.startswith(b'\xfe\xff'):
-                        encoding = "UTF-16-BE"
-                    else:
-                        try:
-                            raw.decode("utf-8")
-                            encoding = "UTF-8"
-                        except UnicodeDecodeError:
-                            encoding = "GBK"
-                    if b'\r\n' in raw:
-                        line_ending = "CRLF"
-                    else:
-                        line_ending = "LF"
-            except Exception:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    if "tree_width" in config:
+                        self._tree_width = config["tree_width"]
+            except:
                 pass
-        return encoding, line_ending
 
-    def _get_active_editor(self):
-        if self._active_tab_id and self._active_tab_id in self._tab_data:
-            return self._tab_data[self._active_tab_id]["textarea"]
-        return None
+    def _save_tree_width(self):
+        try:
+            with open(CONFIG_FILE, "r+", encoding="utf-8") as f:
+                config = json.load(f)
+                config["tree_width"] = self._tree_width
+                f.seek(0)
+                json.dump(config, f, indent=2)
+                f.truncate()
+        except:
+            pass
+
+    def _apply_tree_width(self):
+        tree_container = self.query_one("#tree-container")
+        tree_container.styles.width = self._tree_width
+
+    def on_mouse_down(self, event: events.MouseDown):
+        if self.resize_handle.region.contains(event.x, event.y):
+            self._is_resizing = True
+            self._resize_start_x = event.x
+            self._resize_start_width = self._tree_width
+            event.prevent_default()
+            event.stop()
+            return
+        if event.button == 3:
+            current_text_area = self.get_current_text_area()
+            if current_text_area and current_text_area.region.contains(event.x, event.y):
+                self.push_screen(EditorContextMenu(current_text_area))
+                return
+            if self.file_tree.region.contains(event.x, event.y):
+                node = self.file_tree.cursor_node
+                if node is None:
+                    self.notify("请先选中一个节点", severity="warning")
+                    return
+                data = node.data
+                if data is None:
+                    return
+                if hasattr(data, "path"):
+                    path = Path(data.path)
+                else:
+                    path = Path(str(data))
+                self._context_path = path
+                is_file = path.is_file()
+                self.push_screen(FileTreeContextMenu(path, is_file))
+                return
+        elif event.button == 1:
+            if self.file_tree.region.contains(event.x, event.y):
+                node = self.file_tree.cursor_node
+                if node is not None:
+                    self._drag_node = node
+                    self._drag_start_x = event.x
+                    self._drag_start_y = event.y
+                    self._is_dragging = False
+            else:
+                self._drag_node = None
+
+    def on_mouse_move(self, event: events.MouseMove):
+        if getattr(self, "_is_resizing", False):
+            delta = event.x - self._resize_start_x
+            new_width = max(15, min(60, self._resize_start_width + delta))
+            self._tree_width = new_width
+            self._apply_tree_width()
+            self._save_tree_width()
+            event.prevent_default()
+            event.stop()
+            return
+        if self._drag_node is not None:
+            dx = event.x - self._drag_start_x
+            dy = event.y - self._drag_start_y
+            if (dx * dx + dy * dy) > 25:
+                self._is_dragging = True
+
+    def on_mouse_up(self, event: events.MouseUp):
+        if getattr(self, "_is_resizing", False):
+            self._is_resizing = False
+            event.prevent_default()
+            event.stop()
+            return
+        if self._drag_node is None or event.button != 1:
+            self._drag_node = None
+            self._is_dragging = False
+            return
+        if not self._is_dragging:
+            self._drag_node = None
+            return
+        tree = self.file_tree
+        if not tree.region.contains(event.x, event.y):
+            self._drag_node = None
+            self._is_dragging = False
+            return
+        target_node = tree.cursor_node
+        if target_node is None:
+            target_node = tree.root
+            if target_node is None:
+                self._drag_node = None
+                self._is_dragging = False
+                return
+        if target_node is self._drag_node:
+            self._drag_node = None
+            self._is_dragging = False
+            return
+        target_data = target_node.data
+        if target_data is None:
+            self._drag_node = None
+            self._is_dragging = False
+            return
+        if hasattr(target_data, "path"):
+            target_path = Path(target_data.path)
+        else:
+            target_path = Path(str(target_data))
+        if target_path.is_file():
+            target_path = target_path.parent
+        src_data = self._drag_node.data
+        if hasattr(src_data, "path"):
+            src = Path(src_data.path)
+        else:
+            src = Path(str(src_data))
+        if not src.exists():
+            self._drag_node = None
+            self._is_dragging = False
+            return
+        if src == target_path or target_path.is_relative_to(src):
+            self.notify("不能移动到自身或子目录", severity="warning")
+            self._drag_node = None
+            self._is_dragging = False
+            return
+        dest = target_path / src.name
+        if dest.exists():
+            def confirm_overwrite(ok: bool):
+                if ok:
+                    self._do_move(src, dest)
+            self.push_screen(ConfirmScreen(f"{dest} 已存在，覆盖？", callback=confirm_overwrite))
+        else:
+            self._do_move(src, dest)
+        self._drag_node = None
+        self._is_dragging = False
+
+    def _do_move(self, src: Path, dest: Path):
+        try:
+            shutil.move(str(src), str(dest))
+            self._refresh_file_tree()
+            self.notify(f"已移动: {src.name} -> {dest.parent}", severity="information")
+            abs_dest = str(dest.resolve())
+            for tid, data in self._tab_data.items():
+                if data.get("filepath") == str(src.resolve()):
+                    data["filepath"] = abs_dest
+                    data["title"] = dest.name
+                    data["button"].label = dest.name
+                    self.update_status_bar()
+                    break
+        except Exception as e:
+            self.notify(f"移动失败: {e}", severity="error")
+
+    # ---------- 外部文件修改 ----------
+    def _check_external_changes(self):
+        for tid, data in self._tab_data.items():
+            filepath = data.get("filepath")
+            if filepath and Path(filepath).exists():
+                current_mtime = Path(filepath).stat().st_mtime
+                cached_mtime = self._file_mtime_cache.get(filepath)
+                if cached_mtime is not None and cached_mtime != current_mtime:
+                    self._handle_external_change(filepath, tid)
+                self._file_mtime_cache[filepath] = current_mtime
+
+    def _handle_external_change(self, filepath, tab_id):
+        def callback(reload: bool):
+            if reload:
+                content = safe_read(filepath)
+                if content is not None:
+                    self._tab_data[tab_id]["textarea"].text = content
+                    self._modified[tab_id] = False
+                    self.update_status_bar()
+                    self.notify("文件已重新加载", severity="information")
+                else:
+                    self.notify("重新加载失败", severity="error")
+        if self._modified.get(tab_id, False):
+            self.push_screen(ExternalChangeScreen(filepath, callback))
+        else:
+            callback(True)
+
+    # ---------- 文件树展开 ----------
+    def _expand_to_file(self, filepath):
+        tree = self.file_tree
+        root_path = tree.path
+        try:
+            rel_path = Path(filepath).relative_to(root_path)
+        except ValueError:
+            return
+        def find_and_expand(node, parts, idx=0):
+            if idx >= len(parts):
+                return node
+            part = parts[idx]
+            for child in node.children:
+                if child.data and child.data.name == part:
+                    if idx == len(parts) - 1:
+                        if child.parent:
+                            child.parent.expand()
+                        return child
+                    else:
+                        child.expand()
+                        return find_and_expand(child, parts, idx+1)
+            return None
+        root = tree.root
+        if root:
+            root.expand()
+            find_and_expand(root, rel_path.parts, 0)
+            tree.scroll_to_node(tree.cursor_node)
 
     # ---------- 标签管理 ----------
     def add_new_tab(self, title: str, content: str = "", filepath: str = None) -> str:
         tab_id = f"tab_{self._tab_counter}"
         self._tab_counter += 1
-
         button_container = Horizontal(classes="tab-button-container")
         tab_button = Button(title, id=tab_id, classes="tab-button")
         close_button = Button("×", id=f"close_{tab_id}", classes="tab-close")
-
         self.tab_bar.mount(button_container)
         button_container.mount(tab_button, close_button)
-
-        text_area = AxiomEditor(content, show_line_numbers=True, language="python")
+        text_area = AxiomEditor(content, show_line_numbers=self._show_line_numbers, language="python")
         text_area.wrap = True
         text_area.fold = True
         text_area.indent_width = self._indent_width
         text_area.id = f"textarea_{tab_id}"
         text_area.display = False
         self.content_container.mount(text_area)
-
         self._tab_data[tab_id] = {
             "title": title,
             "filepath": filepath,
@@ -1062,7 +1458,8 @@ class OneEditor(App):
             "line_ending": "LF",
         }
         self._modified[tab_id] = False
-
+        if filepath:
+            self._file_mtime_cache[filepath] = Path(filepath).stat().st_mtime if Path(filepath).exists() else None
         if len(self._tab_data) > 9:
             first_id = next(iter(self._tab_data))
             self.remove_tab(first_id)
@@ -1107,6 +1504,7 @@ class OneEditor(App):
         filepath = self._tab_data[tab_id].get("filepath")
         if filepath:
             self._start_lsp_for_file(filepath, self._tab_data[tab_id]["textarea"].text)
+            self._expand_to_file(filepath)
 
     def _update_tab_styles(self):
         for tid, data in self._tab_data.items():
@@ -1132,144 +1530,63 @@ class OneEditor(App):
             self._show_edit_menu()
         elif btn_id == "menu_tools":
             self._show_tools_menu()
+        elif btn_id == "menu_plugins":
+            self._show_plugins_menu()
 
     # ---------- 菜单 ----------
     def _show_file_menu(self):
-        class FileMenu(ModalScreen):
-            CSS = """
-            FileMenu {
-                background: rgba(0,0,0,0.6);
-                align: center middle;
-            }
-            #menu-container {
-                background: $surface;
-                padding: 1 2;
-                border: tall $primary;
-                width: auto;
-                height: auto;
-                min-width: 20;
-            }
-            #menu-container > Button {
-                margin: 1 0;
-                width: 100%;
-            }
-            """
-            def compose(self):
-                with Container(id="menu-container"):
-                    yield Button("新建", id="new")
-                    yield Button("打开...", id="open")
-                    yield Button("保存", id="save")
-                    yield Button("另存为...", id="save_as")
-                    yield Button("关闭", id="close")
-                    yield Button("退出", id="quit")
-                    yield Button("取消", id="cancel")
-            def on_button_pressed(self, event):
-                if event.button.id == "new":
-                    self.dismiss("new")
-                elif event.button.id == "open":
-                    self.dismiss("open")
-                elif event.button.id == "save":
-                    self.dismiss("save")
-                elif event.button.id == "save_as":
-                    self.dismiss("save_as")
-                elif event.button.id == "close":
-                    self.dismiss("close")
-                elif event.button.id == "quit":
-                    self.dismiss("quit")
-                else:
-                    self.dismiss(None)
-        def callback(result):
-            if result == "new":
+        items = [
+            {"label": "新建", "action": "new", "shortcut": "Ctrl+N"},
+            {"label": "打开...", "action": "open", "shortcut": "Ctrl+O"},
+            {"label": "保存", "action": "save", "shortcut": "Ctrl+S"},
+            {"label": "另存为...", "action": "save_as", "shortcut": "Ctrl+Shift+S"},
+            {"label": "关闭", "action": "close", "shortcut": "Ctrl+W"},
+            {"label": "退出", "action": "quit", "shortcut": "Ctrl+Q"},
+        ]
+        def callback(action):
+            if action == "new":
                 self.action_new_file()
-            elif result == "open":
+            elif action == "open":
                 self.action_open_file()
-            elif result == "save":
+            elif action == "save":
                 self.action_save_file()
-            elif result == "save_as":
+            elif action == "save_as":
                 self.action_save_as()
-            elif result == "close":
+            elif action == "close":
                 self.action_close_file()
-            elif result == "quit":
+            elif action == "quit":
                 self.action_quit()
-        self.push_screen(FileMenu(), callback)
+        self.push_screen(OptionListMenu("文件", items, callback))
 
     def _show_edit_menu(self):
-        class EditMenu(ModalScreen):
-            CSS = """
-            EditMenu {
-                background: rgba(0,0,0,0.6);
-                align: center middle;
-            }
-            #menu-container {
-                background: $surface;
-                padding: 1 2;
-                border: tall $primary;
-                width: auto;
-                height: auto;
-                min-width: 20;
-            }
-            #menu-container > Button {
-                margin: 1 0;
-                width: 100%;
-            }
-            """
-            def compose(self):
-                with Container(id="menu-container"):
-                    yield Button("查找", id="find")
-                    yield Button("替换", id="replace")
-                    yield Button("转到行", id="goto")
-                    yield Button("取消", id="cancel")
-            def on_button_pressed(self, event):
-                if event.button.id == "find":
-                    self.dismiss("find")
-                elif event.button.id == "replace":
-                    self.dismiss("replace")
-                elif event.button.id == "goto":
-                    self.dismiss("goto")
-                else:
-                    self.dismiss(None)
-        def callback(result):
-            if result == "find":
+        items = [
+            {"label": "查找", "action": "find", "shortcut": "Ctrl+F"},
+            {"label": "替换", "action": "replace", "shortcut": "Ctrl+H"},
+            {"label": "转到行", "action": "goto", "shortcut": "Ctrl+G"},
+            {"label": "格式化文档", "action": "format", "shortcut": "Ctrl+Shift+F"},
+        ]
+        def callback(action):
+            if action == "find":
                 self.action_show_find()
-            elif result == "replace":
+            elif action == "replace":
                 self.action_show_replace()
-            elif result == "goto":
+            elif action == "goto":
                 self.action_goto_line()
-        self.push_screen(EditMenu(), callback)
+            elif action == "format":
+                self.action_format_document()
+        self.push_screen(OptionListMenu("编辑", items, callback))
 
     def _show_tools_menu(self):
-        class ToolsMenu(ModalScreen):
-            CSS = """
-            ToolsMenu {
-                background: rgba(0,0,0,0.6);
-                align: center middle;
-            }
-            #menu-container {
-                background: $surface;
-                padding: 1 2;
-                border: tall $primary;
-                width: auto;
-                height: auto;
-                min-width: 20;
-            }
-            #menu-container > Button {
-                margin: 1 0;
-                width: 100%;
-            }
-            """
-            def compose(self):
-                with Container(id="menu-container"):
-                    yield Button("设置", id="settings")
-                    yield Button("取消", id="cancel")
-            def on_button_pressed(self, event):
-                if event.button.id == "settings":
-                    self.dismiss("settings")
-                else:
-                    self.dismiss(None)
-        def callback(result):
-            if result == "settings":
+        items = [
+            {"label": "设置", "action": "settings"},
+        ]
+        def callback(action):
+            if action == "settings":
                 self._show_settings()
-        self.push_screen(ToolsMenu(), callback)
+        self.push_screen(OptionListMenu("工具", items, callback))
+
+    def _show_plugins_menu(self):
+        self.push_screen(PluginsScreen(self))
 
     def _show_settings(self):
         self.push_screen(SettingsScreen(self))
@@ -1328,6 +1645,9 @@ class OneEditor(App):
         open_files = state.get("open_files", [])
         active_index = state.get("active_index", 0)
         self._show_file_tree = state.get("show_file_tree", True)
+        self._indent_width = state.get("indent_width", 4)
+        self._show_line_numbers = state.get("show_line_numbers", True)
+        self._autosave_interval = state.get("autosave_interval", 0)
         for filepath in open_files:
             if filepath is None:
                 continue
@@ -1357,6 +1677,10 @@ class OneEditor(App):
             "open_files": open_files,
             "active_index": active_index,
             "show_file_tree": self.file_tree.display,
+            "tree_width": self._tree_width,
+            "indent_width": self._indent_width,
+            "show_line_numbers": self._show_line_numbers,
+            "autosave_interval": self._autosave_interval,
         }
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -1682,124 +2006,6 @@ class OneEditor(App):
         if path.is_file():
             self._open_file_by_path(path)
 
-    # ---------- 鼠标事件 ----------
-    def on_mouse_down(self, event: events.MouseDown):
-        if event.button == 3:
-            current_text_area = self.get_current_text_area()
-            if current_text_area.region.contains(event.x, event.y):
-                self.push_screen(EditorContextMenu(current_text_area), self._editor_menu_callback)
-                return
-            if self.file_tree.region.contains(event.x, event.y):
-                tree = self.file_tree
-                node = tree.cursor_node
-                if node is None:
-                    self.notify("请先选中一个节点", severity="warning")
-                    return
-                data = node.data
-                if data is None:
-                    return
-                if hasattr(data, "path"):
-                    path = Path(data.path)
-                else:
-                    path = Path(str(data))
-                self._context_path = path
-                is_file = path.is_file()
-                self.push_screen(FileTreeContextMenu(path, is_file), self._filetree_menu_callback)
-                return
-        elif event.button == 1:
-            if self.file_tree.region.contains(event.x, event.y):
-                node = self.file_tree.cursor_node
-                if node is not None:
-                    self._drag_node = node
-                    self._drag_start_x = event.x
-                    self._drag_start_y = event.y
-                    self._is_dragging = False
-            else:
-                self._drag_node = None
-
-    def on_mouse_move(self, event: events.MouseMove):
-        if self._drag_node is not None:
-            dx = event.x - self._drag_start_x
-            dy = event.y - self._drag_start_y
-            if (dx * dx + dy * dy) > 25:
-                self._is_dragging = True
-
-    def on_mouse_up(self, event: events.MouseUp):
-        if self._drag_node is None or event.button != 1:
-            self._drag_node = None
-            self._is_dragging = False
-            return
-        if not self._is_dragging:
-            self._drag_node = None
-            return
-        tree = self.file_tree
-        if not tree.region.contains(event.x, event.y):
-            self._drag_node = None
-            self._is_dragging = False
-            return
-        target_node = tree.cursor_node
-        if target_node is None:
-            target_node = tree.root
-            if target_node is None:
-                self._drag_node = None
-                self._is_dragging = False
-                return
-        if target_node is self._drag_node:
-            self._drag_node = None
-            self._is_dragging = False
-            return
-        target_data = target_node.data
-        if target_data is None:
-            self._drag_node = None
-            self._is_dragging = False
-            return
-        if hasattr(target_data, "path"):
-            target_path = Path(target_data.path)
-        else:
-            target_path = Path(str(target_data))
-        if target_path.is_file():
-            target_path = target_path.parent
-        src_data = self._drag_node.data
-        if hasattr(src_data, "path"):
-            src = Path(src_data.path)
-        else:
-            src = Path(str(src_data))
-        if not src.exists():
-            self._drag_node = None
-            self._is_dragging = False
-            return
-        if src == target_path or target_path.is_relative_to(src):
-            self.notify("不能移动到自身或子目录", severity="warning")
-            self._drag_node = None
-            self._is_dragging = False
-            return
-        dest = target_path / src.name
-        if dest.exists():
-            def confirm_overwrite(ok: bool):
-                if ok:
-                    self._do_move(src, dest)
-            self.push_screen(ConfirmScreen(f"{dest} 已存在，覆盖？", callback=confirm_overwrite))
-        else:
-            self._do_move(src, dest)
-        self._drag_node = None
-        self._is_dragging = False
-
-    def _do_move(self, src: Path, dest: Path):
-        try:
-            shutil.move(str(src), str(dest))
-            self._refresh_file_tree()
-            self.notify(f"已移动: {src.name} -> {dest.parent}", severity="information")
-            abs_dest = str(dest.resolve())
-            for tid, data in self._tab_data.items():
-                if data.get("filepath") == str(src.resolve()):
-                    data["filepath"] = abs_dest
-                    data["title"] = dest.name
-                    data["button"].label = dest.name
-                    self.update_status_bar()
-                    break
-        except Exception as e:
-            self.notify(f"移动失败: {e}", severity="error")
-
     # ---------- 文件树操作回调 ----------
     def _filetree_menu_callback(self, action: str):
         global CLIPBOARD
@@ -1807,7 +2013,7 @@ class OneEditor(App):
             return
         path = self._context_path
 
-        if action == "file":
+        if action == "new_file":
             def create_file(filename: str):
                 new_path = path / filename
                 if new_path.exists():
@@ -1818,7 +2024,7 @@ class OneEditor(App):
                 self._open_file_by_path(new_path)
             self.push_screen(InputScreen("输入文件名:", callback=create_file))
 
-        elif action == "folder":
+        elif action == "new_folder":
             def create_folder(foldername: str):
                 new_path = path / foldername
                 if new_path.exists():
@@ -1982,18 +2188,6 @@ class OneEditor(App):
         self._context_path = path
         self._filetree_menu_callback("move_to")
 
-    # ---------- 编辑器菜单回调 ----------
-    def _editor_menu_callback(self, result):
-        if result is None:
-            return
-        action, _ = result
-        if action == "save":
-            self.action_save_file()
-        elif action == "save_as":
-            self.action_save_as()
-        elif action == "close":
-            self.action_close_file()
-
     # ---------- 文件树刷新 ----------
     def _refresh_file_tree(self):
         try:
@@ -2081,7 +2275,7 @@ class OneEditor(App):
     def _trigger_completion(self):
         if not self.lsp.running:
             return
-        editor = self._get_active_editor()
+        editor = self.get_current_text_area()
         if not editor:
             return
         filepath = self._tab_data.get(self._active_tab_id, {}).get("filepath")
@@ -2108,7 +2302,7 @@ class OneEditor(App):
         if not items:
             menu.hide()
             return
-        editor = self._get_active_editor()
+        editor = self.get_current_text_area()
         if not editor:
             return
         cursor_offset = editor.cursor_screen_offset
@@ -2118,19 +2312,13 @@ class OneEditor(App):
         menu.show(items, (x, y))
 
     def _insert_completion(self, item):
-        """插入补全项，并应用 additionalTextEdits（如自动添加头文件）"""
-        editor = self._get_active_editor()
+        editor = self.get_current_text_area()
         if not editor:
             return
-        # 先关闭菜单
         menu = self.query_one("#completion-menu")
         menu.hide()
-
-        # 应用 additionalTextEdits（如果有）
         additional_edits = item.get("additionalTextEdits")
         if additional_edits:
-            # 按范围倒序应用编辑（避免位置偏移）
-            # 将 TextEdit 转换为 TextArea 可用的格式
             for edit in reversed(additional_edits):
                 range_ = edit.get("range", {})
                 start = range_.get("start", {})
@@ -2141,7 +2329,6 @@ class OneEditor(App):
                 end_col = end.get("character", 0)
                 new_text = edit.get("newText", "")
                 editor.replace(new_text, (start_row, start_col), (end_row, end_col))
-        # 插入补全文本本身
         insert_text = item.get("insertText") or item["label"]
         row, col = editor.cursor_location
         lines = editor.text.split("\n")
@@ -2180,7 +2367,6 @@ class OneEditor(App):
     # ---------- LSP 高级功能 ----------
     def _on_diagnostics(self, uri, diagnostics):
         self._diagnostics_cache[uri] = diagnostics
-        # 不再显示通知，只静默更新状态栏
         if uri == self._current_uri:
             self.update_status_bar()
 
@@ -2188,7 +2374,7 @@ class OneEditor(App):
         if not self.lsp.running:
             self.notify("LSP 未运行", severity="warning")
             return
-        editor = self._get_active_editor()
+        editor = self.get_current_text_area()
         if not editor:
             return
         self.lsp.did_change(editor.text)
@@ -2202,7 +2388,7 @@ class OneEditor(App):
         self.push_screen(SymbolListScreen(symbols, self))
 
     def _jump_to_symbol(self, line, col):
-        editor = self._get_active_editor()
+        editor = self.get_current_text_area()
         if editor:
             editor.cursor_location = (line, col)
             editor.focus()
@@ -2211,7 +2397,7 @@ class OneEditor(App):
         if not self.lsp.running:
             self.notify("LSP 未运行", severity="warning")
             return
-        editor = self._get_active_editor()
+        editor = self.get_current_text_area()
         if not editor:
             return
         row, col = editor.cursor_location
@@ -2237,7 +2423,7 @@ class OneEditor(App):
         if not self.lsp.running:
             self.notify("没有运行的语言服务器", severity="warning")
             return
-        editor = self._get_active_editor()
+        editor = self.get_current_text_area()
         if not editor:
             return
         self.lsp.did_change(editor.text)
@@ -2254,15 +2440,126 @@ class OneEditor(App):
         target_col = result["col"]
         self._open_file_by_path(Path(target_path))
         def _jump():
-            editor = self._get_active_editor()
+            editor = self.get_current_text_area()
             if editor:
                 editor.cursor_location = (target_line, target_col)
                 editor.focus()
         self.call_after_refresh(_jump)
 
+    def action_rename_symbol(self):
+        if not self.lsp.running:
+            self.notify("LSP 未运行", severity="warning")
+            return
+        editor = self.get_current_text_area()
+        if not editor:
+            return
+        row, col = editor.cursor_location
+        self.lsp.did_change(editor.text)
+        def do_rename(new_name: str):
+            if not new_name:
+                return
+            self.run_worker(self._do_rename(row, col, new_name), exclusive=True, group="rename")
+        self.push_screen(InputScreen("输入新名称:", callback=do_rename))
+
+    async def _do_rename(self, row, col, new_name):
+        result = await self.lsp.rename(row, col, new_name)
+        if result:
+            editor = self.get_current_text_area()
+            if editor and "changes" in result:
+                changes = result["changes"]
+                for uri, edits in changes.items():
+                    if uri == self._current_uri:
+                        for edit in reversed(edits):
+                            range_ = edit.get("range", {})
+                            start = range_.get("start", {})
+                            end = range_.get("end", {})
+                            start_row = start.get("line", 0)
+                            start_col = start.get("character", 0)
+                            end_row = end.get("line", 0)
+                            end_col = end.get("character", 0)
+                            new_text = edit.get("newText", "")
+                            editor.replace(new_text, (start_row, start_col), (end_row, end_col))
+                self.notify("重命名成功", severity="information")
+            else:
+                self.notify("重命名失败", severity="error")
+
+    def action_code_action(self):
+        if not self.lsp.running:
+            self.notify("LSP 未运行", severity="warning")
+            return
+        editor = self.get_current_text_area()
+        if not editor:
+            return
+        row, col = editor.cursor_location
+        self.lsp.did_change(editor.text)
+        self.run_worker(self._fetch_code_actions(row, col), exclusive=True, group="code-action")
+
+    async def _fetch_code_actions(self, row, col):
+        actions = await self.lsp.code_action(row, col)
+        if not actions:
+            self.notify("没有可用的代码操作", severity="information")
+            return
+        items = []
+        for action in actions:
+            title = action.get("title", "操作")
+            items.append({"label": title, "action": action, "shortcut": ""})
+        def callback(action):
+            self._apply_code_action(action)
+        self.push_screen(OptionListMenu("代码操作", items, callback))
+
+    def _apply_code_action(self, action):
+        if "edit" in action:
+            edits = action["edit"]
+            editor = self.get_current_text_area()
+            if editor and "changes" in edits:
+                for uri, edit_list in edits["changes"].items():
+                    if uri == self._current_uri:
+                        for edit in reversed(edit_list):
+                            range_ = edit.get("range", {})
+                            start = range_.get("start", {})
+                            end = range_.get("end", {})
+                            start_row = start.get("line", 0)
+                            start_col = start.get("character", 0)
+                            end_row = end.get("line", 0)
+                            end_col = end.get("character", 0)
+                            new_text = edit.get("newText", "")
+                            editor.replace(new_text, (start_row, start_col), (end_row, end_col))
+        if "command" in action:
+            self.notify(f"执行命令: {action['command']['title']}", severity="information")
+
+    def action_format_document(self):
+        if not self.lsp.running:
+            self.notify("LSP 未运行", severity="warning")
+            return
+        editor = self.get_current_text_area()
+        if not editor:
+            return
+        self.lsp.did_change(editor.text)
+        self.run_worker(self._do_format(), exclusive=True, group="format")
+
+    async def _do_format(self):
+        result = await self.lsp.format_document()
+        if result:
+            editor = self.get_current_text_area()
+            if editor:
+                # 应用格式编辑（通常只有一个 TextEdit）
+                for edit in result:
+                    range_ = edit.get("range", {})
+                    start = range_.get("start", {})
+                    end = range_.get("end", {})
+                    start_row = start.get("line", 0)
+                    start_col = start.get("character", 0)
+                    end_row = end.get("line", 0)
+                    end_col = end.get("character", 0)
+                    new_text = edit.get("newText", "")
+                    editor.replace(new_text, (start_row, start_col), (end_row, end_col))
+                self.notify("文档已格式化", severity="information")
+        else:
+            self.notify("格式化失败", severity="warning")
+
     # ---------- 工具 ----------
     def focus_editor(self):
-        editor = self._get_active_editor()
+        editor = self.get_current_text_area()
         if editor:
             editor.focus()
 
