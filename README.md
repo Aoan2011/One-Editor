@@ -122,7 +122,7 @@ python one-editor.py
 - `indent_type`: spaces 或 tabs
 - `default_dir`: 默认项目目录（用于 Companion 等）
 - `ollama_url`: Ollama API 地址（默认 http://localhost:11434）
-- `ollama_model`: 使用的模型（默认 llama2）
+- `ollama_model`: 使用的模型（默认 gpt-oss:20b-cloud）
 
 ## 📁 项目结构
 ```
