@@ -82,6 +82,7 @@ class LspClient:
                     "publishDiagnostics": {"dynamicRegistration": False},
                     "codeAction": {"dynamicRegistration": False},
                     "rename": {"dynamicRegistration": False},
+                    "formatting": {"dynamicRegistration": False},
                 },
                 "workspace": {"didChangeWatchedFiles": {"dynamicRegistration": False}},
             },
@@ -157,27 +158,9 @@ class LspClient:
             }
             if "additionalTextEdits" in item:
                 comp["additionalTextEdits"] = item["additionalTextEdits"]
-            if "insertTextFormat" in item:
-                comp["insertTextFormat"] = item["insertTextFormat"]
             completions.append(comp)
         return completions
 
-    async def format_document(self) -> List[Dict[str, Any]]:
-        if not self._uri or not self.running:
-            return []
-        try:
-            result = await asyncio.wait_for(
-                self._request("textDocument/formatting", {
-                    "textDocument": {"uri": self._uri},
-                    "options": {"tabSize": 4, "insertSpaces": True},
-                }),
-                timeout=5,
-            )
-        except Exception:
-            return []
-        if not result:
-            return []
-        return result
     async def goto_definition(self, line: int, col: int) -> Optional[Dict[str, Any]]:
         if not self._uri or not self.running:
             return None
@@ -298,6 +281,23 @@ class LspClient:
             )
         except Exception:
             return None
+        return result
+
+    async def format_document(self) -> List[Dict[str, Any]]:
+        if not self._uri or not self.running:
+            return []
+        try:
+            result = await asyncio.wait_for(
+                self._request("textDocument/formatting", {
+                    "textDocument": {"uri": self._uri},
+                    "options": {"tabSize": 4, "insertSpaces": True},
+                }),
+                timeout=5,
+            )
+        except Exception:
+            return []
+        if not result:
+            return []
         return result
 
     async def _request(self, method: str, params: Any):
