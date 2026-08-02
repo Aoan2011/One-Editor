@@ -1,10 +1,28 @@
 # One Editor 🚀
-
+```
+  ___                  _____    _ _ _            
+ / _ \ _ __   ___     | ____|__| (_) |_ ___  _ __ 
+| | | | '_ \ / _ \    |  _| / _` | | __/ _ \| '__|
+| |_| | | | |  __/    | |__| (_| | | || (_) | |   
+ \___/|_| |_|\___|    |_____\__,_|_|\__\___/|_|   
+```
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://python.org)
 [![Textual](https://img.shields.io/badge/Textual-0.15%2B-green)](https://textual.textualize.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+![GitHub commit activity](https://img.shields.io/github/commit-activity/w/Aoan2011/One-Editor)
+![GitHub last commit](https://img.shields.io/github/last-commit/Aoan2011/One-Editor)
+![GitHub Created At](https://img.shields.io/github/created-at/Aoan2011/One-Editor)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/Aoan2011/One-Editor/total)
+![GitHub Issues](https://img.shields.io/github/issues/Aoan2011/One-Editor)
+![GitHub Discussions (all)](https://img.shields.io/github/discussions/all/Aoan2011/One-Editor)
+![GitHub forks](https://img.shields.io/github/forks/Aoan2011/One-Editor)
+![GitHub Repo stars](https://img.shields.io/github/stars/Aoan2011/One-Editor)
+![GitHub Tag](https://img.shields.io/github/v/tag/Aoan2011/One-Editor)
+
 
 **One Editor** 是一款由准高中生基于 [Textual](https://textual.textualize.io) 构建的现代化终端代码编辑器，提供接近 VSCode 的编辑体验，同时保持轻量、快速和高度可定制。
+
+> **您好！该项目仍处于测试阶段，不正当的使用可能会产生意想不到的后果**
 
 ![One Editor 截图](img1.png) 
 ![One Editor 截图](img2.png) 
@@ -18,13 +36,15 @@
 - 🌳 **文件树** – 侧边栏文件浏览，支持新建、删除、重命名、移动、复制、粘贴，并带有撤销/重做（Ctrl+Z / Ctrl+Shift+Z）
 - 🔍 **LSP 集成** – 支持补全、跳转定义、悬停提示、重命名符号、代码操作、诊断（错误/警告），并自带 **Error Lens**（行内诊断）和 **Rainbow Brackets**（括号匹配高亮）
 - 🖥️ **内置终端** – 完整的 Shell 终端，支持命令历史（上下键）
-- 🤖 **Ollama 对话** – 集成本地 AI 助手，可直接在编辑器内提问并插入生成的代码
+- 🤖 **Ollama 对话** – 集成本地 AI 助手，可直接在编辑器内提问并插入生成的代码 
+  > **AI 生成的代码仅供参考**
 - 📦 **插件系统** – 支持启用/禁用语言服务器和功能插件（如 Competitive Companion）
 - 🛠️ **运行/构建/调试** – 一键运行 Python、JavaScript、C/C++、Go、Rust、Ruby、PHP 等语言，并支持项目构建（CMake / npm / Cargo）
 - 📊 **文件对比** – 对比两个打开的标签页，显示统一差异（unified diff）
 - 🎨 **命令面板** – 类似 VSCode 的命令面板（Ctrl+Shift+P），快速执行所有操作，并可切换主题
 - 📸 **截图** – 一键保存当前编辑器窗口截图（Ctrl+K）
 - 🌍 **多语言** – 内置中英文切换（设置面板）
+  > **当前仅支持中文（简体）和英语**
 - ⚙️ **可配置** – 主题、缩进、自动保存、字体大小、自动换行等
 
 ---
@@ -35,17 +55,23 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/your-repo/one-editor.git
+git clone https://github.com/Aoan2011/one-editor.git
 cd one-editor
 
 # 安装 Python 依赖
 pip install -r requirements.txt
 ```
 requirements.txt 内容
-```text
+```python
+#MIT License
+
+#Copyright (c) 2026 Aoan2011
+
 textual>=0.15.0
-aiohttp>=3.8.0
+aiohttp>=3.14.1
 python-lsp-server>=1.0.0   # 或 pylsp
+textual[syntax] >= 8.2.8
+#ollama >= 0.6.2
 ```
 运行
 ```bash
@@ -97,14 +123,16 @@ python one-editor.py
 ### 内置语言支持
 | 语言 | 服务器 | 备注 |
 |------|--------|------|
-| Python | pylsp | 需安装 python-lsp-server |
-| JavaScript/TypeScript | typescript-language-server | 需 npm i -g typescript-language-server |
-| C/C++ | clangd | 需安装 LLVM / clangd |
-| Java | jdtls | 需下载 Eclipse JDT LS |
-| Go | gopls | 需 go install golang.org/x/tools/gopls@latest |
+| Python | pylsp | 需安装 `python-lsp-server` |
+| JavaScript/TypeScript | typescript-language-server | 需 ```npm i -g typescript-language-server``` |
+| C/C++ | clangd | 需安装 `LLVM / clangd` |
+| Java | jdtls | 需下载 `Eclipse JDT LS` |
+| Go | gopls | 需 ```go install golang.org/x/tools/gopls@latest``` |
 | Rust | rust-analyzer | 需安装 rust-analyzer |
-| Ruby | solargraph | 需 gem install solargraph |
-| PHP | intelephense | 需 npm i -g intelephense |
+| Ruby | solargraph | 需 ```gem install solargraph``` |
+| PHP | intelephense | 需 ```npm i -g intelephense``` |
+
+>  **请确保你的lsp已被添加到PATH**
 
 ## Competitive Companion
 启用后，编辑器会在本地 10045 端口监听 HTTP POST 请求，接收来自 Competitive Companion 浏览器扩展的题目数据，自动生成代码文件和测试用例。

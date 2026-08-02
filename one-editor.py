@@ -1,4 +1,5 @@
-'''MIT License
+'''
+MIT License
 
 Copyright (c) 2026 Aoan2011
 
@@ -20,7 +21,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 '''
-import os, re, json, shutil, asyncio, subprocess, difflib
+import os, re, json, shutil, asyncio, subprocess, difflib, traceback
 from pathlib import Path
 from datetime import datetime
 from textual.app import App, ComposeResult
@@ -34,7 +35,7 @@ from textual.geometry import Offset
 from lsp import LspClient, LANG_SERVERS, path_to_uri, uri_to_path
 from companion import CompanionServer
 
-VERSION = "1.0.0-alpha.1"
+VERSION = "1.0.1-alpha.1"
 CONFIG_DIR = Path.home() / ".one-editor"
 CONFIG_FILE = CONFIG_DIR / "state.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
@@ -52,26 +53,46 @@ TR = {"zh": {"menu_file": "文件", "menu_edit": "编辑", "menu_tools": "工具
 }
 LANGUAGE_MAP = {".py":"python", ".js":"javascript", ".ts":"typescript", ".jsx":"javascript", ".tsx":"typescript", ".html":"html", ".htm":"html", ".css":"css", ".scss":"scss", ".json":"json", ".md":"markdown", ".sh":"bash", ".bash":"bash", ".sql":"sql", ".java":"java", ".c":"c", ".cpp":"cpp", ".h":"c", ".hpp":"cpp", ".cs":"csharp", ".go":"go", ".rs":"rust", ".rb":"ruby", ".php":"php", ".swift":"swift", ".kt":"kotlin", ".xml":"xml", ".yaml":"yaml", ".yml":"yaml", ".toml":"toml", ".ini":"ini", ".txt":None}
 def detect_language(path): return LANGUAGE_MAP.get(Path(path).suffix.lower())
-def safe_read(path):
-    try: return open(path,"r",encoding="utf-8").read()
-    except: return None
+def safe_read(path, encoding='utf-8'):
+    try:
+        with open(path,"r",encoding=encoding) as f:
+            return f.read()
+    except:
+        return None
 class FileOperation:
     def __init__(self,op_type,path,old_data=None,new_data=None,old_path=None):
         self.op_type=op_type; self.path=path; self.old_data=old_data; self.new_data=new_data; self.old_path=old_path
 class InputScreen(Screen):
     def __init__(self,prompt,callback): super().__init__(); self.prompt=prompt; self.callback=callback
     def compose(self):
-        yield Label(self.prompt)
-        self.input=Input(placeholder=self.app._tr("input_prompt"))
-        yield self.input
-        yield Static(self.app._tr("input_enter"))
+        try:
+            yield Label(self.prompt)
+            self.input=Input(placeholder=self.app._tr("input_prompt"))
+            yield self.input
+            yield Static(self.app._tr("input_enter"))
+        except Exception as e:
+            yield Label(f"错误: {e}")
+            yield Button("关闭", id="input-error-close")
     def on_input_submitted(self,event):
-        v=event.value.strip()
-        if v: self.callback(v); self.dismiss()
+        v = event.value.strip()
+        if v:
+            try:
+                self.callback(v)
+            except Exception as e:
+                self.app.notify(f"输入处理失败: {e}", severity="error")
+                traceback.print_exc()
+        self.dismiss()
     def on_key(self,event):
-        if event.key=="escape": self.dismiss()
+        if event.key=="escape":
+            self.dismiss()
+    def on_button_pressed(self,event):
+        if event.button.id=="input-error-close":
+            self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 class SaveConfirmScreen(ModalScreen):
-    CSS = """SaveConfirmScreen{align:center middle;background:rgba(0,0,0,0.6);}#save-box{background:$surface;padding:2 3;border:round $accent;width:40;height:auto;}#save-box>Label{text-align:center;margin:1 0;}#save-box>Horizontal{height:3;margin:1 0;}#save-box>Button{margin:0 1;width:1fr;}"""
+    CSS = """SaveConfirmScreen{align:center middle;background:rgba(0,0,0,0.6);}#save-box{background:$surface;padding:2 3;border:round $border;width:40;height:auto;}#save-box>Label{text-align:center;margin:1 0;}#save-box>Horizontal{height:3;margin:1 0;}#save-box>Button{margin:0 1;width:1fr;}"""
     def __init__(self,message,callback): super().__init__(); self.message=message; self.callback=callback
     def compose(self):
         with Container(id="save-box"):
@@ -82,8 +103,11 @@ class SaveConfirmScreen(ModalScreen):
                 yield Button(self.app._tr("cancel_btn"),id="cancel")
     def on_button_pressed(self,event):
         if event.button.id in ("save","nosave","cancel"): self.callback(event.button.id); self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 class ExternalChangeScreen(ModalScreen):
-    CSS = """ExternalChangeScreen{background:rgba(0,0,0,0.6);align:center middle;}#container{background:$surface;padding:2 3;border:tall $primary;width:50;height:auto;}#container>Button{margin:1 1;width:1fr;}"""
+    CSS = """ExternalChangeScreen{background:rgba(0,0,0,0.6);align:center middle;}#container{background:$surface;padding:2 3;border:round $border;width:50;height:auto;}#container>Button{margin:1 1;width:1fr;}"""
     def __init__(self,filepath,callback): super().__init__(); self.filepath=filepath; self.callback=callback
     def compose(self):
         with Container(id="container"):
@@ -96,8 +120,11 @@ class ExternalChangeScreen(ModalScreen):
         if event.button.id=="reload": self.callback(True)
         else: self.callback(False)
         self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 class OptionListMenu(ModalScreen):
-    CSS = """OptionListMenu{background:rgba(0,0,0,0.6);align:center middle;}#menu-container{background:$surface;padding:1 2;border:round $accent;width:auto;min-width:30;max-width:60;height:auto;max-height:20;overflow-y:auto;}.menu-item{width:1fr;padding:0 1;height:1;background:$surface;border:none;text-align:left;}.menu-item:hover{background:$panel;}.menu-item .shortcut{color:$text-muted;margin-left:2;}"""
+    CSS = """OptionListMenu{background:rgba(0,0,0,0.6);align:center middle;}#menu-container{background:$surface;padding:1 2;border:round $border;width:auto;min-width:30;max-width:60;height:auto;max-height:20;overflow-y:auto;}.menu-item{width:1fr;padding:0 1;height:1;background:$surface;border:none;text-align:left;}.menu-item:hover{background:$panel;}.menu-item .shortcut{color:$text-muted;margin-left:2;}"""
     def __init__(self, title, items, callback):
         super().__init__()
         self.title = title
@@ -123,9 +150,9 @@ class OptionListMenu(ModalScreen):
     def on_button_pressed(self, event):
         if self._dismissed:
             return
+        self._dismissed = True
+        self.dismiss()
         if event.button.id == "menu_cancel":
-            self._dismissed = True
-            self.dismiss()
             return
         try:
             idx = int(event.button.id.split("_")[1])
@@ -139,19 +166,23 @@ class OptionListMenu(ModalScreen):
                     action = item
                 if action is None:
                     action = str(item)
-                self.callback(action)
+                try:
+                    self.callback(action)
+                except Exception as e:
+                    self.app.notify(f"操作失败: {e}", severity="error", timeout=5)
+                    traceback.print_exc()
         except Exception as e:
             self.app.notify(f"菜单执行错误: {e}", severity="error", timeout=5)
-        finally:
-            if not self._dismissed:
-                self._dismissed = True
-                self.dismiss()
+            traceback.print_exc()
     def on_key(self, event):
         if event.key == "escape" and not self._dismissed:
             self._dismissed = True
             self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 class OutputPanel(Vertical):
-    DEFAULT_CSS = """OutputPanel{height:10;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}OutputPanel>TextArea{border:none;background:$surface;height:1fr;}"""
+    DEFAULT_CSS = """OutputPanel{height:10;background:$surface;border:round $border;display:none;padding:0 1;margin:0;}OutputPanel>TextArea{border:none;background:$surface;height:1fr;}"""
     def compose(self):
         self.output_area=TextArea(read_only=True,language=None,id="output-area")
         yield self.output_area
@@ -159,7 +190,7 @@ class OutputPanel(Vertical):
         self.output_area.text=""
 
 class TerminalPanel(Vertical):
-    DEFAULT_CSS = """TerminalPanel{height:12;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}TerminalPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}TerminalPanel>Horizontal{height:3;margin:0 0 1 0;}TerminalPanel>Horizontal>Input{width:1fr;margin:0 1;}TerminalPanel>Horizontal>Button{margin:0 1;height:1;}"""
+    DEFAULT_CSS = """TerminalPanel{height:12;background:$surface;border:round $border;display:none;padding:0 1;margin:0;}TerminalPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}TerminalPanel>Horizontal{height:3;margin:0 0 1 0;}TerminalPanel>Horizontal>Input{width:1fr;margin:0 1;}TerminalPanel>Horizontal>Button{margin:0 1;height:1;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -263,10 +294,10 @@ class TerminalPanel(Vertical):
     def _scroll_to_bottom(self):
         lines=len(self.output_area.text.splitlines())
         if lines>0:
-            self.output_area.scroll_to((lines-1,0),animate=False)
+            self.call_after_refresh(lambda: self.output_area.scroll_to((lines-1,0),animate=False))
 
 class DiagnosticScreen(Screen):
-    CSS = """DiagnosticScreen{background:rgba(0,0,0,0.6);align:center middle;}#diag-container{background:$surface;padding:1 2;border:round $accent;width:70;height:30;overflow-y:auto;}.diag-item{margin:0 0 1 0;padding:0 1;width:1fr;border:none;text-align:left;}.diag-item:hover{background:$panel;}.diag-error{color:$error;}.diag-warning{color:$warning;}#diag-header{height:1;background:$surface;margin-bottom:1;}#diag-close{width:1fr;border:none;background:$surface;color:$text;dock:right;}#diag-close:hover{background:$error;color:$text;}"""
+    CSS = """DiagnosticScreen{background:rgba(0,0,0,0.6);align:center middle;}#diag-container{background:$surface;padding:1 2;border:round $border;width:70;height:30;overflow-y:auto;}.diag-item{margin:0 0 1 0;padding:0 1;width:1fr;border:none;text-align:left;}.diag-item:hover{background:$panel;}.diag-error{color:$error;}.diag-warning{color:$warning;}#diag-header{height:1;background:$surface;margin-bottom:1;}#diag-close{width:1fr;border:none;background:$surface;color:$text;dock:right;}#diag-close:hover{background:$error;color:$text;}"""
     def __init__(self,diagnostics,app):
         super().__init__()
         self.diagnostics=diagnostics
@@ -302,41 +333,107 @@ class DiagnosticScreen(Screen):
             if editor:
                 editor.cursor_location=(line,col)
                 editor.focus()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 
 class DiffScreen(Screen):
-    CSS = """DiffScreen{background:rgba(0,0,0,0.6);align:center middle;}#diff-container{background:$surface;padding:1 2;border:round $accent;width:90;height:80%;overflow-y:auto;}#diff-area{height:1fr;border:none;}#diff-close{margin-top:1;width:1fr;}"""
+    CSS = """DiffScreen{background:rgba(0,0,0,0.6);align:center middle;}#diff-container{background:$surface;padding:1 2;border:round $border;width:90;height:80%;overflow-y:auto;}#diff-area{height:1fr;border:none;}#diff-close{margin-top:1;width:1fr;}"""
     def __init__(self,left_text,right_text,left_title="旧",right_title="新"):
         super().__init__()
-        self.left_text=left_text
-        self.right_text=right_text
+        self.left_text=left_text or ""
+        self.right_text=right_text or ""
         self.left_title=left_title
         self.right_title=right_title
     def compose(self):
-        diff=difflib.unified_diff(self.left_text.splitlines(), self.right_text.splitlines(), fromfile=self.left_title, tofile=self.right_title, lineterm='')
-        diff_text='\n'.join(diff)
-        with Container(id="diff-container"):
-            yield Label(self.app._tr("diff_title"),id="diff-title")
-            yield TextArea(diff_text,read_only=True,language=None,id="diff-area")
-            yield Button(self.app._tr("diff_close"),id="diff-close",variant="primary")
+        try:
+            left_lines = self.left_text.splitlines() if self.left_text else [""]
+            right_lines = self.right_text.splitlines() if self.right_text else [""]
+            diff = difflib.unified_diff(left_lines, right_lines, fromfile=self.left_title, tofile=self.right_title, lineterm='')
+            diff_text = '\n'.join(diff) or "(无差异)"
+            with Container(id="diff-container"):
+                yield Label(self.app._tr("diff_title"),id="diff-title")
+                yield TextArea(diff_text,read_only=True,language=None,id="diff-area")
+                yield Button(self.app._tr("diff_close"),id="diff-close",variant="primary")
+        except Exception as e:
+            yield Label(f"对比失败: {e}")
+            yield Button("关闭", id="diff-error-close")
     def on_button_pressed(self,event):
-        if event.button.id=="diff-close":
+        if event.button.id=="diff-close" or event.button.id=="diff-error-close":
             self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 
 class AboutScreen(Screen):
-    CSS = """AboutScreen{background:rgba(0,0,0,0.6);align:center middle;}#about-container{background:$surface;padding:2 3;border:round $accent;width:50;height:auto;}#about-title{text-style:bold;text-align:center;margin:1 0;}#about-version{text-align:center;color:$text-muted;}#about-close{margin-top:2;width:1fr;}"""
+    CSS = """AboutScreen{background:rgba(0,0,0,0.6);align:center middle;}#about-container{background:$surface;padding:2 3;border:round $border;width:45;height:auto;}#about-ascii{text-align:center;color:$primary;font-family:monospace;margin:0 0 1 0;}#about-title{text-style:bold;text-align:center;margin:1 0;color:$primary;}#about-version{text-align:center;color:$text;margin:1 0 0 0;}#about-latest{text-align:center;color:$success;margin:0 0 1 0;}#about-desc,#about-features{text-align:center;margin:1 0;}#about-divider{text-align:center;color:$text-muted;margin:1 0;}#about-close{margin-top:2;width:1fr;}"""
     def compose(self):
-        with Container(id="about-container"):
-            yield Label(self.app._tr("about_title"),id="about-title")
-            yield Label(self.app._tr("about_version"),id="about-version")
-            yield Label(self.app._tr("about_desc"),id="about-desc")
-            yield Label(self.app._tr("about_features"),id="about-features")
-            yield Button(self.app._tr("about_close"),id="about-close-btn",variant="primary")
-    def on_button_pressed(self,event):
-        if event.button.id=="about-close-btn":
+        try:
+            with Container(id="about-container"):
+                yield Label(r"""
+  ___                  _____    _ _ _            
+ / _ \ _ __   ___     | ____|__| (_) |_ ___  _ __ 
+| | | | '_ \ / _ \    |  _| / _` | | __/ _ \| '__|
+| |_| | | | |  __/    | |__| (_| | | || (_) | |   
+ \___/|_| |_|\___|    |_____\__,_|_|\__\___/|_|   
+""", id="about-ascii")
+                yield Label(self.app._tr("about_title"), id="about-title")
+                yield Label("══════════════════════", id="about-divider")
+                yield Label(f"本地版本: {VERSION}", id="about-version")
+                self.latest_version_label = Label("最新版本: 正在检查...", id="about-latest")
+                yield self.latest_version_label
+                yield Label(self.app._tr("about_desc"), id="about-desc")
+                yield Label(self.app._tr("about_features"), id="about-features")
+                yield Button(self.app._tr("about_close"), id="about-close-btn", variant="primary")
+                self.app.run_worker(self._fetch_latest_version(), exclusive=True)
+        except Exception as e:
+            yield Label(f"关于加载失败: {e}")
+            yield Button("关闭", id="about-error-close")
+
+    async def _fetch_latest_version(self):
+        import re
+        try:
+            import aiohttp
+        except ImportError:
+            self.latest_version_label.update("最新版本: 请安装 aiohttp")
+            return
+        url = "https://github.com/Aoan2011/One-Editor/releases"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status != 200:
+                        self.latest_version_label.update(f"最新版本: 获取失败 (HTTP {resp.status})")
+                        return
+                    html = await resp.text()
+            pattern = r'/Aoan2011/One-Editor/releases/tag/v?([\d.]+(?:-alpha\.\d+)?(?:-beta\.\d+)?)'
+            matches = re.findall(pattern, html)
+            if matches:
+                latest = matches[0]
+                if latest != VERSION:
+                    self.latest_version_label.update(f"最新版本: v{latest} 🆕")
+                else:
+                    self.latest_version_label.update(f"最新版本: v{latest} ✅")
+            else:
+                self.latest_version_label.update("最新版本: 未找到")
+        except asyncio.TimeoutError:
+            self.latest_version_label.update("最新版本: 请求超时")
+        except aiohttp.ClientError:
+            self.latest_version_label.update("最新版本: 网络错误")
+        except Exception as e:
+            self.latest_version_label.update("最新版本: 解析失败")
+            traceback.print_exc()
+
+    def on_button_pressed(self, event):
+        if event.button.id == "about-close-btn" or event.button.id == "about-error-close":
             self.dismiss()
-    def on_key(self,event):
-        if event.key=="escape":
+
+    def on_key(self, event):
+        if event.key == "escape":
             self.dismiss()
+
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 
 class CommandPalette(OptionListMenu):
     def __init__(self,commands,callback):
@@ -420,7 +517,87 @@ class AxiomEditor(TextArea):
         except:
             self.app.update_status_bar()
     async def _on_key(self,event):
-        if event.key=="ctrl+a":
+        if event.key == "ctrl+s":
+            self.app.action_save_file()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+o":
+            self.app.action_open_file()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+n":
+            self.app.action_new_file()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+w":
+            self.app.action_close_file()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+q":
+            self.app.action_quit()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+f":
+            self.app.action_show_find()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+h":
+            self.app.action_show_replace()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+g":
+            self.app.action_goto_line()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+b":
+            self.app.action_toggle_file_tree()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "f5":
+            self.app.action_run()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "f6":
+            self.app.action_build()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "f7":
+            self.app.action_debug()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+`":
+            self.app.action_toggle_terminal()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+shift+p":
+            self.app.action_command_palette()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+d":
+            self.app.action_compare_files()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+k":
+            self.app.action_screenshot()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+a":
             self.select_all()
             event.prevent_default()
             event.stop()
@@ -515,7 +692,7 @@ class AxiomEditor(TextArea):
             self.app.notify(f"📖 {result}",severity="information",timeout=5)
 
 class CompletionMenu(OptionList):
-    DEFAULT_CSS = """CompletionMenu{layer:autocomplete;display:none;height:auto;max-height:10;width:auto;min-width:30;max-width:60;border:round $accent;background:$surface;padding:0;}"""
+    DEFAULT_CSS = """CompletionMenu{layer:overlay;display:none;height:auto;max-height:10;width:auto;min-width:30;max-width:60;border:round $border;background:$surface;padding:0;}"""
     can_focus=False
     def __init__(self):
         super().__init__(id="completion-menu")
@@ -547,26 +724,45 @@ class CompletionMenu(OptionList):
         return None
 
 class FindReplaceBar(Horizontal):
-    def __init__(self,parent_app,find_callback,replace_callback):
+    def __init__(self,parent_app,find_callback,replace_callback,goto_callback):
         super().__init__()
         self.parent_app=parent_app
         self.find_callback=find_callback
         self.replace_callback=replace_callback
+        self.goto_callback=goto_callback
         self.mode="find"
         self.case_sensitive=False
         self.use_regex=False
     def compose(self):
+        # 查找输入
         self.find_input=Input(placeholder=self.app._tr("search_placeholder"),id="find-input")
         yield self.find_input
+        # 替换输入
         self.replace_input=Input(placeholder=self.app._tr("replace_placeholder"),id="replace-input")
         self.replace_input.display=False
         yield self.replace_input
-        yield Button(self.app._tr("case_sensitive"),id="case-btn",classes="find-btn")
-        yield Button(self.app._tr("regex"),id="regex-btn",classes="find-btn")
-        yield Button(self.app._tr("find_btn"),id="find-btn",classes="find-btn",variant="primary")
-        yield Button(self.app._tr("replace_btn"),id="replace-btn",classes="find-btn",variant="warning")
-        yield Button(self.app._tr("replace_all_btn"),id="replace-all-btn",classes="find-btn",variant="warning")
-        yield Button(self.app._tr("cancel_find"),id="cancel-btn",classes="find-btn")
+        # 转到行输入
+        self.goto_input=Input(placeholder="输入行号...",id="goto-input")
+        self.goto_input.display=False
+        yield self.goto_input
+        # 按钮
+        self.case_btn=Button(self.app._tr("case_sensitive"),id="case-btn",classes="find-btn")
+        yield self.case_btn
+        self.regex_btn=Button(self.app._tr("regex"),id="regex-btn",classes="find-btn")
+        yield self.regex_btn
+        self.find_btn=Button(self.app._tr("find_btn"),id="find-btn",classes="find-btn",variant="primary")
+        yield self.find_btn
+        self.replace_btn=Button(self.app._tr("replace_btn"),id="replace-btn",classes="find-btn",variant="warning")
+        self.replace_btn.display=False
+        yield self.replace_btn
+        self.replace_all_btn=Button(self.app._tr("replace_all_btn"),id="replace-all-btn",classes="find-btn",variant="warning")
+        self.replace_all_btn.display=False
+        yield self.replace_all_btn
+        self.goto_btn=Button("转到",id="goto-btn",classes="find-btn",variant="primary")
+        self.goto_btn.display=False
+        yield self.goto_btn
+        self.cancel_btn=Button(self.app._tr("cancel_find"),id="cancel-btn",classes="find-btn")
+        yield self.cancel_btn
     def _cycle_history(self,input_widget,history_list,index_attr,direction):
         history=getattr(self.parent_app,history_list)
         if not history:
@@ -583,7 +779,7 @@ class FindReplaceBar(Horizontal):
         if event.key=="escape":
             self.parent_app._hide_find_replace()
             return
-        if self.find_input.has_focus:
+        if self.find_input.display and self.find_input.has_focus:
             if event.key=="up":
                 self._cycle_history(self.find_input,'_search_history','_search_index',-1)
                 event.prevent_default()
@@ -601,33 +797,98 @@ class FindReplaceBar(Horizontal):
                 self._cycle_history(self.replace_input,'_replace_history','_replace_index',1)
                 event.prevent_default()
                 event.stop()
-    def on_button_pressed(self,event):
-        if event.button.id=="case-btn":
-            self.case_sensitive=not self.case_sensitive
-            event.button.label=self.app._tr("case_sensitive") if self.case_sensitive else "aa"
-        elif event.button.id=="regex-btn":
-            self.use_regex=not self.use_regex
-            event.button.label=self.app._tr("regex") if self.use_regex else "re"
-        elif event.button.id=="find-btn":
+        elif self.goto_input.display and self.goto_input.has_focus:
+            if event.key=="enter":
+                self._do_goto()
+                event.prevent_default()
+                event.stop()
+    def on_input_submitted(self,event):
+        if event.input.id == "goto-input":
+            self._do_goto()
+            return
+        if self.mode=="find":
             q=self.find_input.value
             if q:
                 self.find_callback(q,self.case_sensitive,self.use_regex)
-        elif event.button.id=="replace-btn":
+        elif self.mode=="replace":
             f=self.find_input.value
             r=self.replace_input.value
             if f:
                 self.replace_callback(f,r,False,self.case_sensitive,self.use_regex)
-        elif event.button.id=="replace-all-btn":
+    def on_button_pressed(self,event):
+        btn_id=event.button.id
+        if btn_id=="case-btn":
+            self.case_sensitive=not self.case_sensitive
+            event.button.label=self.app._tr("case_sensitive") if self.case_sensitive else "aa"
+        elif btn_id=="regex-btn":
+            self.use_regex=not self.use_regex
+            event.button.label=self.app._tr("regex") if self.use_regex else "re"
+        elif btn_id=="find-btn":
+            q=self.find_input.value
+            if q:
+                self.find_callback(q,self.case_sensitive,self.use_regex)
+        elif btn_id=="replace-btn":
+            f=self.find_input.value
+            r=self.replace_input.value
+            if f:
+                self.replace_callback(f,r,False,self.case_sensitive,self.use_regex)
+        elif btn_id=="replace-all-btn":
             f=self.find_input.value
             r=self.replace_input.value
             if f:
                 self.replace_callback(f,r,True,self.case_sensitive,self.use_regex)
-        elif event.button.id=="cancel-btn":
+        elif btn_id=="goto-btn":
+            self._do_goto()
+        elif btn_id=="cancel-btn":
             self.parent_app._hide_find_replace()
     def set_mode(self,mode):
         self.mode=mode
-        self.replace_input.display=(mode=="replace")
-        (self.replace_input if mode=="replace" else self.find_input).focus()
+        # 隐藏所有输入和按钮
+        self.find_input.display=False
+        self.replace_input.display=False
+        self.goto_input.display=False
+        self.find_btn.display=False
+        self.replace_btn.display=False
+        self.replace_all_btn.display=False
+        self.goto_btn.display=False
+        # 显示对应模式
+        if mode=="find":
+            self.find_input.display=True
+            self.find_btn.display=True
+            self.find_input.focus()
+        elif mode=="replace":
+            self.find_input.display=True
+            self.replace_input.display=True
+            self.find_btn.display=True
+            self.replace_btn.display=True
+            self.replace_all_btn.display=True
+            self.replace_input.focus()
+        elif mode=="goto":
+            self.goto_input.display=True
+            self.goto_btn.display=True
+            self.goto_input.focus()
+        # 取消按钮总是显示
+        self.cancel_btn.display=True
+    def show_goto(self):
+        self.set_mode("goto")
+        self.display=True
+    def _do_goto(self):
+        try:
+            n=int(self.goto_input.value.strip())
+        except ValueError:
+            self.parent_app.notify("请输入有效的行号", severity="error")
+            return
+        ta=self.parent_app.get_current_text_area()
+        if not ta:
+            return
+        total=len(ta.text.splitlines())
+        if n<1 or n>total:
+            self.parent_app.notify(f"只有 {total} 行", severity="warning")
+            return
+        ta.cursor_location=(n-1,0)
+        ta.scroll_to((n-1,0),animate=False)
+        self.parent_app.update_status_bar()
+        self.parent_app._hide_find_replace()
 
 class EditorContextMenu(OptionListMenu):
     def __init__(self,text_area):
@@ -738,7 +999,7 @@ class SymbolListScreen(OptionListMenu):
         super().__init__("符号列表",items,cb)
 
 class FileBrowserPanel(Vertical):
-    DEFAULT_CSS = """FileBrowserPanel{height:20;background:$surface;border:tall $primary;display:none;padding:0 1;}#browser-layout{height:1fr;}#browser-tree{width:30;border-right:tall $primary;padding:0 1;}#browser-input-area{width:1fr;padding:0 1;}#browser-input{width:1fr;margin:1 0;}#browser-buttons{height:3;padding:1 0;}.browser-btn{margin:0 1;}"""
+    DEFAULT_CSS = """FileBrowserPanel{height:20;background:$surface;border:round $border;display:none;padding:0 1;}#browser-layout{height:1fr;}#browser-tree{width:30;border-right:round $border;padding:0 1;}#browser-input-area{width:1fr;padding:0 1;}#browser-input{width:1fr;margin:1 0;}#browser-buttons{height:3;padding:1 0;}.browser-btn{margin:0 1;}"""
     def __init__(self,parent_app,mode="open",callback=None):
         super().__init__()
         self.parent_app=parent_app
@@ -806,43 +1067,74 @@ class FileBrowserPanel(Vertical):
 
 # ---------- 设置页面 ----------
 class SettingsScreen(Screen):
-    CSS = """SettingsScreen{background:rgba(0,0,0,0.6);align:center middle;}#settings-container{background:$surface;padding:1 2;border:round $accent;width:60;height:auto;max-height:80%;overflow-y:auto;}#settings-container>Label{margin:1 0;}#settings-container>Select,#settings-container>Input,#settings-container>Checkbox{margin:0 0 1 0;}.settings-row{height:3;padding:0 1;}"""
+    CSS = """SettingsScreen{background:rgba(0,0,0,0.6);align:center middle;}#settings-container{background:$surface;padding:2 3;border:round $border;width:50;height:auto;max-height:80%;overflow-y:auto;}#settings-title{text-style:bold;color:$primary;margin:0 0 1 0;}.settings-group{margin:1 0;}.settings-group Label{margin:1 0 0 0;}.settings-group > Horizontal{width:1fr;}.settings-group > Horizontal > * {width:1fr;margin:0 1;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
         self._settings=app._settings
     def compose(self):
-        with Container(id="settings-container"):
-            yield Label(self.app._tr("settings"),classes="title")
-            yield Label(self.app._tr("theme")+":")
-            self.theme_select=Select([("textual-dark","textual-dark"),("textual-light","textual-light"),("dracula","dracula"),("nord","nord"),("ansi-dark","ansi-dark"),("ansi-light","ansi-light")],prompt="选择主题",value=self._settings.get("theme","textual-dark"))
-            yield self.theme_select
-            yield Label(self.app._tr("indent")+":")
-            self.indent_input=Input(value=str(self._settings.get("indent_width",4)),type="integer")
-            yield self.indent_input
-            yield Label(self.app._tr("autosave")+":")
-            self.autosave_input=Input(value=str(self._settings.get("autosave_interval",0)),type="integer")
-            yield self.autosave_input
-            self.line_numbers_check=Checkbox(self.app._tr("line_numbers"),value=self._settings.get("show_line_numbers",True))
-            yield self.line_numbers_check
-            yield Label(self.app._tr("default_dir")+":")
-            self.dir_input=Input(value=self._settings.get("default_dir",str(Path.home())),id="dir-input")
-            yield self.dir_input
-            yield Label(self.app._tr("indent_type_label")+":")
-            self.indent_type=Select([(self.app._tr("spaces"),"spaces"),(self.app._tr("tabs"),"tabs")],prompt="选择",value=self._settings.get("indent_type","spaces"))
-            yield self.indent_type
-            yield Label(self.app._tr("font_size_label")+":")
-            self.font_input=Input(value=str(self._settings.get("font_size",12)),type="integer")
-            yield self.font_input
-            self.wrap_check=Checkbox(self.app._tr("wrap_label"),value=self._settings.get("wrap",True))
-            yield self.wrap_check
-            yield Label(self.app._tr("language_label")+":")
-            self.lang_select=Select([(self.app._tr("language_zh"),"zh"),(self.app._tr("language_en"),"en")],prompt="选择语言",value=self._settings.get("language","zh"))
-            yield self.lang_select
-            yield Label(" ")
-            yield Button(self.app._tr("save_settings"),variant="primary",id="save-settings")
-            yield Button(self.app._tr("cancel"),id="cancel-settings")
+        try:
+            with Container(id="settings-container"):
+                yield Label(self.app._tr("settings"),id="settings-title")
+                with Container(classes="settings-group"):
+                    yield Label(self.app._tr("theme")+":")
+                    theme = str(self._settings.get("theme", "textual-dark"))
+                    themes = ["textual-dark", "textual-light", "dracula", "nord", "ansi-dark", "ansi-light"]
+                    if theme not in themes:
+                        theme = themes[0]
+                    self.theme_select = Select([(t, t) for t in themes], value=theme, allow_blank=False)
+                    yield self.theme_select
+                    yield Label(self.app._tr("language_label")+":")
+                    lang = str(self._settings.get("language", "zh"))
+                    langs = ["zh", "en"]
+                    if lang not in langs:
+                        lang = langs[0]
+                    self.lang_select = Select([(self.app._tr("language_zh"), "zh"), (self.app._tr("language_en"), "en")], value=lang, allow_blank=False)
+                    yield self.lang_select
+                with Container(classes="settings-group"):
+                    with Horizontal():
+                        with Vertical():
+                            yield Label(self.app._tr("indent")+":")
+                            self.indent_input=Input(value=str(self._settings.get("indent_width",4)),type="integer")
+                            yield self.indent_input
+                        with Vertical():
+                            yield Label(self.app._tr("indent_type_label")+":")
+                            itype = str(self._settings.get("indent_type", "spaces"))
+                            itypes = ["spaces", "tabs"]
+                            if itype not in itypes:
+                                itype = itypes[0]
+                            self.indent_type = Select([(self.app._tr("spaces"), "spaces"), (self.app._tr("tabs"), "tabs")], value=itype, allow_blank=False)
+                            yield self.indent_type
+                with Container(classes="settings-group"):
+                    with Horizontal():
+                        with Vertical():
+                            yield Label(self.app._tr("font_size_label")+":")
+                            self.font_input=Input(value=str(self._settings.get("font_size",12)),type="integer")
+                            yield self.font_input
+                        with Vertical():
+                            yield Label(self.app._tr("autosave")+":")
+                            self.autosave_input=Input(value=str(self._settings.get("autosave_interval",0)),type="integer")
+                            yield self.autosave_input
+                with Container(classes="settings-group"):
+                    self.line_numbers_check=Checkbox(self.app._tr("line_numbers"),value=self._settings.get("show_line_numbers",True))
+                    yield self.line_numbers_check
+                    self.wrap_check=Checkbox(self.app._tr("wrap_label"),value=self._settings.get("wrap",True))
+                    yield self.wrap_check
+                with Container(classes="settings-group"):
+                    yield Label(self.app._tr("default_dir")+":")
+                    self.dir_input=Input(value=self._settings.get("default_dir",str(Path.home())),id="dir-input")
+                    yield self.dir_input
+                with Horizontal():
+                    yield Button(self.app._tr("save_settings"),variant="primary",id="save-settings")
+                    yield Button(self.app._tr("cancel"),id="cancel-settings")
+        except Exception as e:
+            yield Label(f"设置加载失败: {e}")
+            yield Button("关闭", id="settings-error-close")
+            traceback.print_exc()
     def on_button_pressed(self,event):
+        if event.button.id == "settings-error-close":
+            self.dismiss()
+            return
         if event.button.id=="save-settings":
             try:
                 if self.theme_select.value:
@@ -882,15 +1174,19 @@ class SettingsScreen(Screen):
                 self.app_ref.notify(self.app._tr("save_settings")+" "+self.app._tr("save_success").format(name=""),severity="information")
             except Exception as e:
                 self.app_ref.notify(f"保存设置失败: {e}",severity="error")
+                traceback.print_exc()
         else:
             self.dismiss()
     def on_key(self,event):
         if event.key=="escape":
             self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 
 # ---------- 插件页面 ----------
 class PluginsScreen(Screen):
-    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:1 2;border:round $accent;width:80;height:auto;max-height:80%;overflow-y:auto;overflow-x:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:3;padding:0 1;margin:0 0 1 0;background:$surface;border:none;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-features{width:1fr;}.toggle-btn{width:12;border:none;background:$primary;color:$text;}.toggle-btn.off{background:$surface;color:$text-muted;}.settings-btn{width:8;border:none;background:$accent;color:$text;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}.feature-row{height:2;padding:0 1;}"""
+    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:2 3;border:round $border;width:70;height:auto;max-height:80%;overflow-y:auto;overflow-x:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:3;padding:0 1;margin:0 0 1 0;background:$surface;border:round $border;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-actions{width:1fr;}.toggle-btn{width:10;border:none;background:$primary;color:$surface;}.toggle-btn.off{background:$surface;color:$text;border:round $border;}.settings-btn{width:8;border:none;background:$secondary;color:$surface;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -919,24 +1215,18 @@ class PluginsScreen(Screen):
         import shutil
         with Container(id="plugins-container"):
             yield Horizontal(Label(self.app._tr("menu_plugins"),id="plugins-title"),Button("✕",id="plugins-close"),classes="plugin-header")
-            yield Horizontal(Label("名称",classes="plugin-name"),Label("服务器/状态",classes="plugin-server"),Label("状态",classes="plugin-status"),Label(self.app._tr("plugin_features"),classes="plugin-features"),Label("操作",classes="plugin-actions"),classes="plugin-header")
+            yield Horizontal(Label("名称",classes="plugin-name"),Label("服务器/状态",classes="plugin-server"),Label("状态",classes="plugin-status"),Label("操作",classes="plugin-actions"),classes="plugin-header")
             for name,config in self.plugin_config.items():
                 if name=="competitive-companion":
                     status=self.app._tr("plugin_enable") if config.get("enabled",True) else self.app._tr("plugin_disable")
                     with Container(classes="plugin-row"):
-                        yield Horizontal(Label(self.app._tr("plugin_competitive"),classes="plugin-name"),Label(self.app._tr("plugin_external"),classes="plugin-server"),Label(status,classes="plugin-status"),Label(config.get("description",""),classes="plugin-features"),Button(self.app._tr("plugin_toggle"),id=f"toggle_{name}",classes="toggle-btn"))
-                        checkboxes=[Checkbox(feature,value=enabled,id=f"feature_{name}_{feature}") for feature,enabled in config.get("features",{}).items()]
-                        if checkboxes:
-                            yield Horizontal(*checkboxes,classes="feature-row")
+                        yield Horizontal(Label(self.app._tr("plugin_competitive"),classes="plugin-name"),Label(self.app._tr("plugin_external"),classes="plugin-server"),Label(status,classes="plugin-status"),Button(self.app._tr("plugin_toggle"),id=f"toggle_{name}",classes="toggle-btn"))
                 else:
                     server=LANG_SERVERS.get(name,["未安装"])
                     installed=shutil.which(server[0]) is not None if server else False
                     status=self.app._tr("plugin_enable") if config.get("enabled",True) else self.app._tr("plugin_disable")
                     with Container(classes="plugin-row"):
-                        yield Horizontal(Label(name,classes="plugin-name"),Label(server[0] if installed else self.app._tr("plugin_install"),classes="plugin-server"),Label(status,classes="plugin-status"),Label(" ",classes="plugin-features"),Button(self.app._tr("plugin_toggle"),id=f"toggle_{name}",classes="toggle-btn"),Button("设置",id=f"settings_{name}",classes="settings-btn"))
-                        checkboxes=[Checkbox(feature,value=enabled,id=f"feature_{name}_{feature}") for feature,enabled in config.get("features",{}).items()]
-                        if checkboxes:
-                            yield Horizontal(*checkboxes,classes="feature-row")
+                        yield Horizontal(Label(name,classes="plugin-name"),Label(server[0] if installed else self.app._tr("plugin_install"),classes="plugin-server"),Label(status,classes="plugin-status"),Button(self.app._tr("plugin_toggle"),id=f"toggle_{name}",classes="toggle-btn"),Button("设置",id=f"settings_{name}",classes="settings-btn"))
             yield Button(self.app._tr("plugin_save"),variant="primary",id="save-plugins")
             yield Button(self.app._tr("cancel"),id="cancel-plugins")
     def on_button_pressed(self,event):
@@ -957,21 +1247,18 @@ class PluginsScreen(Screen):
             name=event.button.id.split("_")[1]
             self.app_ref.push_screen(LanguageSettingsScreen(name,self.plugin_config[name],self))
         elif event.button.id=="save-plugins":
-            for name in self.plugin_config:
-                for feature in self.plugin_config[name].get("features",{}):
-                    try:
-                        self.plugin_config[name]["features"][feature]=self.query_one(f"#feature_{name}_{feature}",Checkbox).value
-                    except:
-                        pass
             self._save_config()
             self.dismiss()
             self.app_ref.notify(self.app._tr("plugin_save"),severity="information")
     def on_key(self,event):
         if event.key=="escape":
             self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 
 class LanguageSettingsScreen(Screen):
-    CSS = """LanguageSettingsScreen{background:rgba(0,0,0,0.6);align:center middle;}#lang-settings-container{background:$surface;padding:1 2;border:round $accent;width:60;height:auto;max-height:80%;overflow-y:auto;}#lang-settings-container>Label{margin:1 0;}#lang-settings-container>Input{margin:0 0 1 0;}"""
+    CSS = """LanguageSettingsScreen{background:rgba(0,0,0,0.6);align:center middle;}#lang-settings-container{background:$surface;padding:2 3;border:round $border;width:60;height:auto;max-height:80%;overflow-y:auto;}#lang-settings-container>Label{margin:1 0;}#lang-settings-container>Input{margin:0 0 1 0;}"""
     def __init__(self,lang,config,parent_screen):
         super().__init__()
         self.lang=lang
@@ -1001,9 +1288,12 @@ class LanguageSettingsScreen(Screen):
     def on_key(self,event):
         if event.key=="escape":
             self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 
 class OllamaPanel(Vertical):
-    DEFAULT_CSS = """OllamaPanel{height:14;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}OllamaPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}OllamaPanel>Horizontal{height:3;margin:0 0 1 0;}OllamaPanel>Horizontal>Input{width:1fr;margin:0 1;}OllamaPanel>Horizontal>Button{margin:0 1;height:1;}"""
+    DEFAULT_CSS = """OllamaPanel{height:14;background:$surface;border:round $border;display:none;padding:0 1;margin:0;}OllamaPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}OllamaPanel>Horizontal{height:3;margin:0 0 1 0;}OllamaPanel>Horizontal>Input{width:1fr;margin:0 1;}OllamaPanel>Horizontal>Button{margin:0 1;height:1;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -1101,6 +1391,7 @@ class OllamaPanel(Vertical):
             self.output_area.text+=f"\n[错误] {e}\n"
         finally:
             self._is_loading=False
+            self._scroll_to_bottom()
     def _insert_code(self):
         text=self.output_area.text
         blocks=re.findall(r'```(\w*)\n(.*?)```',text,re.DOTALL)
@@ -1128,10 +1419,10 @@ class OllamaPanel(Vertical):
     def _scroll_to_bottom(self):
         lines=len(self.output_area.text.splitlines())
         if lines>0:
-            self.output_area.scroll_to((lines-1,0),animate=False)
+            self.call_after_refresh(lambda: self.output_area.scroll_to((lines-1,0),animate=False))
 
 class WelcomeScreen(Screen):
-    CSS = """WelcomeScreen{background:$surface;}#welcome-container{align:center middle;width:100%;height:100%;background:$surface;}#welcome-box{width:60;height:auto;background:$surface;border:round $primary;padding:2 4;}#welcome-title{text-style:bold;font-size:20;text-align:center;color:$primary;}#welcome-subtitle{text-align:center;color:$text-muted;margin:1 0;}#welcome-actions{margin:2 0;layout:vertical;align:center middle;}.welcome-btn{width:30;margin:0 1;padding:0 2;text-align:center;}#welcome-tips{text-align:center;color:$text-muted;margin-top:2;}"""
+    CSS = """WelcomeScreen{background:$surface;}#welcome-container{align:center middle;width:100%;height:100%;background:$surface;}#welcome-box{width:60;height:auto;background:$surface;border:round $border;padding:2 4;}#welcome-title{text-style:bold;font-size:20;text-align:center;color:$primary;}#welcome-subtitle{text-align:center;color:$text-muted;margin:1 0;}#welcome-actions{margin:2 0;layout:vertical;align:center middle;}.welcome-btn{width:30;margin:0 1;padding:0 2;text-align:center;}#welcome-tips{text-align:center;color:$text-muted;margin-top:2;}"""
     def compose(self):
         with Container(id="welcome-container"):
             with Container(id="welcome-box"):
@@ -1151,12 +1442,85 @@ class WelcomeScreen(Screen):
     def on_key(self,event):
         if event.key=="escape":
             self.dismiss()
+    def on_unmount(self):
+        if self.app:
+            self.app.focus_editor()
 
 class OneEditor(App):
     def __init__(self):
         super().__init__()
         self._language="zh"
         self._settings=self._load_settings()
+    # Tokyo Night 主题配色（默认）
+    CSS = """
+    $background: #1a1b26;
+    $surface: #1e212b;
+    $panel: #2a2c3a;
+    $text: #c0caf5;
+    $text-muted: #565f89;
+    $primary: #7aa2f7;
+    $secondary: #9d7cd8;
+    $accent: #f38ba8;
+    $success: #9ece6a;
+    $error: #f7768e;
+    $warning: #e0af68;
+    $border: #3b4261;
+
+    #main-layout{layout:horizontal;}
+    #sidebar{width:30;background:$surface;border-right:round $border;padding:0 1;display:block;}
+    #editor-area{width:1fr;layers:default overlay;}
+    #menu-bar{height:1;background:$surface;padding:0 1;layout:horizontal;}
+    .menu-btn{padding:0 1;background:$surface;color:$text;border:none;height:1;}
+    .menu-btn:hover{background:$panel;}
+    #diag-counter{dock:right;padding:0 1;background:$surface;color:$text;height:1;border:none;}
+    #diag-counter:hover{background:$panel;}
+    #tab-bar-container{height:3;background:$surface;layout:horizontal;border-bottom:round $border;}
+    .tab-scroll-btn{height:2;width:3;background:$surface;border:none;color:$text;}
+    .tab-scroll-btn:hover{background:$panel;}
+    #tab-scroll{height:2;background:$surface;overflow-x:auto;scrollbar-size:1 1;padding:0 1;}
+    #tab-bar{width:auto;height:2;background:$surface;}
+    .tab-button-container{height:2;display:block;padding:0 1;}
+    .tab-button{background:transparent;color:$text-muted;border:none;border-bottom:round transparent;height:2;padding:0 1;margin:0;}
+    .tab-button:hover{background:$panel;color:$text;}
+    .tab-button.active{color:$text;border-bottom:round $primary;}
+    .tab-close{background:transparent;color:$text-muted;border:none;height:2;min-width:2;padding:0 1;display:block;}
+    .tab-close:hover{background:$error;color:$text;}
+    #content-container{height:1fr;}
+    TextArea{border:none;background:$surface;}
+    #status-bar{background:$surface;color:$text;padding:0 1;height:1;layout:horizontal;border-top:round $border;}
+    #status-left{width:12;padding:0 1;height:1;text-style:bold;}
+    #status-center{width:1fr;padding:0 1;height:1;}
+    #status-right{width:auto;padding:0 1;height:1;dock:right;}
+    #find-replace-bar{height:3;background:$surface;padding:0 1;display:none;}
+    #find-replace-bar>Input{width:1fr;margin:0 1;border:none;border-bottom:round $border;}
+    #find-replace-bar>Button{margin:0 1;height:1;}
+    .find-btn{padding:0 1;background:transparent;color:$text;border:round $border;height:1;}
+    .find-btn:hover{border:round $primary;}
+    #file-browser{height:20;background:$surface;border:round $border;display:none;padding:0 1;}
+    #browser-layout{height:1fr;}
+    #browser-tree{width:30;border-right:round $border;padding:0 1;}
+    #browser-input-area{width:1fr;padding:0 1;}
+    #browser-input{width:1fr;margin:1 0;border:none;border-bottom:round $border;}
+    #browser-buttons{height:3;padding:1 0;}
+    .browser-btn{margin:0 1;}
+    #completion-menu{layer:overlay;display:none;height:auto;max-height:10;width:auto;min-width:30;max-width:60;border:round $border;background:$surface;padding:0;}
+    .tree-resize-handle{width:3;background:$surface;border-right:round $border;}
+    #tree-container{height:1fr;width:30;background:$surface;}
+    .tree-node.drag-target{background:$accent 50%;}
+    DirectoryTree > .tree--node{height:1;padding:0 1;}
+    DirectoryTree > .tree--node.highlight{background:$panel;}
+    DirectoryTree > .tree--node .tree--file{color:$text;}
+    DirectoryTree > .tree--node .tree--directory{color:$primary;}
+    Input{border:none;border-bottom:round $border;background:transparent;color:$text;}
+    Select{background:$surface;color:$text;border:round $border;}
+    Checkbox{color:$primary;}
+    Button{border:round $border;background:transparent;color:$text;}
+    Button.variant-primary{background:$primary;color:$background;border:round $primary;}
+    Button.variant-warning{background:$warning;color:$background;border:round $warning;}
+    Button.variant-error{background:$error;color:$background;border:round $error;}
+    Button:hover{background:$panel;border:round $primary;}
+    .welcome-placeholder{color:$text-muted;text-align:center;padding:4;}
+    """
     BINDINGS = [
         Binding("ctrl+n","new_file","新建",show=False),
         Binding("ctrl+o","open_file","打开",show=False),
@@ -1193,9 +1557,6 @@ class OneEditor(App):
         Binding("ctrl+shift+o","toggle_ollama","Ollama对话",show=False),
         Binding("ctrl+k","screenshot","截图",show=False),
     ]
-    CSS = """
-    #main-layout{layout:horizontal;}#sidebar{width:30;background:$surface;border-right:tall $primary;padding:0 1;display:block;}#editor-area{width:1fr;layers:default autocomplete overlay;}#menu-bar{height:1;background:$surface;padding:0 1;layout:horizontal;}.menu-btn{padding:0 2;background:$surface;color:$text;border:none;height:1;}.menu-btn:hover{background:$panel;}#diag-counter{dock:right;padding:0 2;background:$surface;color:$text;height:1;border:none;}#diag-counter:hover{background:$panel;}#tab-bar-container{height:3;background:$surface;layout:horizontal;border-bottom:tall $primary;}.tab-scroll-btn{height:2;width:3;background:$surface;border:none;color:$text;}.tab-scroll-btn:hover{background:$panel;}#tab-scroll{height:2;background:$surface;overflow-x:auto;scrollbar-size:1 1;padding:0 1;}#tab-bar{width:auto;height:2;background:$surface;}.tab-button-container{height:2;display:block;padding:0 1;}.tab-button{padding:0 2;background:$surface;color:$text;border:none;height:2;margin:0;border-bottom:solid transparent;max-width:15;overflow:hidden;}.tab-button:hover{background:$panel;}.tab-button.active{background:$surface;color:$text;border-bottom:solid $primary;text-style:bold;}.tab-close{padding:0 1;margin:0 1 0 0;background:transparent;color:$text-muted;border:none;height:2;min-width:2;display:block;}.tab-close:hover{background:$error;color:$text;}#content-container{height:1fr;}TextArea{border:none;background:$surface;}#status-bar{background:$primary;color:$text;padding:0 1;height:1;}#find-replace-bar{height:3;background:$surface;padding:0 1;display:none;}#find-replace-bar>Input{width:1fr;margin:0 1;}#find-replace-bar>Button{margin:0 1;height:1;}.find-btn{padding:0 1;background:$surface;color:$text;border:none;height:1;}.find-btn:hover{background:$panel;}#file-browser{height:20;background:$surface;border:tall $primary;display:none;padding:0 1;}#browser-layout{height:1fr;}#browser-tree{width:30;border-right:tall $primary;padding:0 1;}#browser-input-area{width:1fr;padding:0 1;}#browser-input{width:1fr;margin:1 0;}#browser-buttons{height:3;padding:1 0;}.browser-btn{margin:0 1;}#completion-menu{layer:autocomplete;display:none;height:auto;max-height:10;width:auto;min-width:30;max-width:60;border:round $accent;background:$surface;padding:0;}.tree-resize-handle{width:3;background:$surface;border-right:tall $primary;}#tree-container{height:1fr;width:30;background:$surface;}.tree-node.drag-target{background:$accent 50%;}.welcome-placeholder{color:$text-muted;text-align:center;padding:4;}
-    """
     def compose(self):
         yield Header()
         yield TopMenuBar(id="menu-bar")
@@ -1205,7 +1566,7 @@ class OneEditor(App):
                 self.tab_bar=Horizontal(id="tab-bar")
                 yield self.tab_bar
             yield Button("▶",id="tab-scroll-right",classes="tab-scroll-btn")
-        self.find_bar=FindReplaceBar(self,self._do_find,self._do_replace)
+        self.find_bar=FindReplaceBar(self,self._do_find,self._do_replace,self._do_goto)
         self.find_bar.id="find-replace-bar"
         yield self.find_bar
         self.file_browser=FileBrowserPanel(parent_app=self,mode="open")
@@ -1229,8 +1590,14 @@ class OneEditor(App):
                 yield self.terminal_panel
                 self.ollama_panel=OllamaPanel(self)
                 yield self.ollama_panel
-        self.status_bar=Static(id="status-bar")
-        yield self.status_bar
+        # 状态栏
+        self.status_left = Static(id="status-left")
+        self.status_center = Static(id="status-center")
+        self.status_right = Static(id="status-right")
+        with Horizontal(id="status-bar"):
+            yield self.status_left
+            yield self.status_center
+            yield self.status_right
         yield Footer()
     def on_mount(self):
         self._tab_data={}
@@ -1437,16 +1804,6 @@ class OneEditor(App):
                 is_file=path.is_file()
                 self.push_screen(FileTreeContextMenu(path,is_file))
                 return
-        elif event.button==1:
-            if self.file_tree.region.contains(event.x,event.y):
-                node=self.file_tree.cursor_node
-                if node is not None:
-                    self._drag_node=node
-                    self._drag_start_x=event.x
-                    self._drag_start_y=event.y
-                    self._is_dragging=False
-            else:
-                self._drag_node=None
     def on_mouse_move(self,event):
         if getattr(self,"_is_resizing",False):
             delta=event.x-self._resize_start_x
@@ -1457,75 +1814,12 @@ class OneEditor(App):
             event.prevent_default()
             event.stop()
             return
-        if self._drag_node is not None:
-            dx=event.x-self._drag_start_x
-            dy=event.y-self._drag_start_y
-            if dx*dx+dy*dy>25:
-                self._is_dragging=True
-            if self._is_dragging:
-                tree=self.file_tree
-                # 修复 get_node_at 不存在问题，改为使用 cursor_node
-                # 由于 Textual 0.15 没有 get_node_at，改用 cursor_node
-                target=tree.cursor_node
-                if target!=self._drag_target_node:
-                    if self._drag_target_node:
-                        self._drag_target_node.remove_class("drag-target")
-                    self._drag_target_node=target
-                    if target:
-                        target.add_class("drag-target")
-                    self.refresh()
     def on_mouse_up(self,event):
         if getattr(self,"_is_resizing",False):
             self._is_resizing=False
             event.prevent_default()
             event.stop()
             return
-        if self._drag_node is None or event.button!=1:
-            self._drag_node=None
-            self._is_dragging=False
-            if self._drag_target_node:
-                self._drag_target_node.remove_class("drag-target")
-                self._drag_target_node=None
-            return
-        if not self._is_dragging:
-            self._drag_node=None
-            return
-        tree=self.file_tree
-        if not tree.region.contains(event.x,event.y):
-            self._cancel_drag()
-            return
-        target_node=tree.cursor_node
-        if target_node is None:
-            target_node=tree.root
-        if target_node is None or target_node is self._drag_node:
-            self._cancel_drag()
-            return
-        target_data=target_node.data
-        if target_data is None:
-            self._cancel_drag()
-            return
-        target_path=Path(target_data.path) if hasattr(target_data,"path") else Path(str(target_data))
-        if target_path.is_file():
-            target_path=target_path.parent
-        src_data=self._drag_node.data
-        src=Path(src_data.path) if hasattr(src_data,"path") else Path(str(src_data))
-        if not src.exists():
-            self._cancel_drag()
-            return
-        if src==target_path or target_path.is_relative_to(src):
-            self.notify("不能移动到自身或子目录",severity="warning")
-            self._cancel_drag()
-            return
-        dest=target_path/src.name
-        if dest.exists():
-            def cb(ok):
-                if ok:
-                    self._do_move(src,dest)
-                self._cancel_drag()
-            self.push_screen(SaveConfirmScreen(self._tr("overwrite").format(dest=dest),callback=cb))
-        else:
-            self._do_move(src,dest)
-            self._cancel_drag()
     def _do_move(self,src,dest):
         try:
             shutil.move(str(src),str(dest))
@@ -1541,13 +1835,6 @@ class OneEditor(App):
                     break
         except Exception as e:
             self.notify(f"移动失败: {e}",severity="error")
-    def _cancel_drag(self):
-        self._is_dragging=False
-        self._drag_node=None
-        if self._drag_target_node:
-            self._drag_target_node.remove_class("drag-target")
-            self._drag_target_node=None
-        self.refresh()
     def _check_external_changes(self):
         for tid,data in self._tab_data.items():
             fp=data.get("filepath")
@@ -1560,7 +1847,8 @@ class OneEditor(App):
     def _handle_external_change(self,filepath,tab_id):
         def cb(reload):
             if reload:
-                content=safe_read(filepath)
+                enc, _ = self._get_file_encoding_and_ending(filepath)
+                content=safe_read(filepath, encoding=enc)
                 if content is not None:
                     self._tab_data[tab_id]["textarea"].text=content
                     self._modified[tab_id]=False
@@ -1640,6 +1928,12 @@ class OneEditor(App):
             remaining=list(self._tab_data.keys())
             if remaining:
                 self.show_tab(remaining[0])
+            else:
+                new_id=self.add_new_tab("欢迎","",None)
+                self._tab_data[new_id]["textarea"].text=self._get_welcome_text()
+                self._tab_data[new_id]["textarea"].read_only=True
+                self._tab_data[new_id]["is_welcome"]=True
+                self.show_tab(new_id)
         else:
             self._update_tab_styles()
         self.update_status_bar()
@@ -1651,25 +1945,27 @@ class OneEditor(App):
             return
         for d in self._tab_data.values():
             d["textarea"].display=False
-        self._tab_data[tid]["textarea"].display=True
+        data=self._tab_data[tid]
+        data["textarea"].display=True
         self._active_tab_id=tid
         self._update_tab_styles()
         self.update_status_bar()
-        self._tab_data[tid]["textarea"].focus()
+        data["textarea"].focus()
         self._find_matches=[]
         self._find_index=-1
         self._hide_find_replace()
         self._save_state()
-        container=self._tab_data[tid]["container"]
-        container.scroll_visible()
-        fp=self._tab_data[tid].get("filepath")
+        container=data.get("container")
+        if container and container.parent:
+            container.scroll_visible()
+        fp=data.get("filepath")
         if fp and Path(fp).exists():
             self.terminal_panel.set_cwd(Path(fp).parent)
-            self._start_lsp_for_file(fp,self._tab_data[tid]["textarea"].text)
+            self._start_lsp_for_file(fp,data["textarea"].text)
             self._expand_to_file(fp)
         else:
-            if self._tab_data[tid].get("is_welcome",False):
-                self._tab_data[tid]["textarea"].text=self._get_welcome_text()
+            if data.get("is_welcome",False):
+                data["textarea"].text=self._get_welcome_text()
     def _update_tab_styles(self):
         for tid,d in self._tab_data.items():
             if tid==self._active_tab_id:
@@ -1718,30 +2014,36 @@ class OneEditor(App):
     def _show_file_menu(self):
         items=[{"label":self._tr("new"),"action":"new"},{"label":self._tr("open"),"action":"open"},{"label":self._tr("save"),"action":"save"},{"label":self._tr("save_as"),"action":"save_as"},{"label":self._tr("close"),"action":"close"},{"label":self._tr("quit"),"action":"quit"}]
         def cb(a):
-            if a=="new":
-                self.action_new_file()
-            elif a=="open":
-                self.action_open_file()
-            elif a=="save":
-                self.action_save_file()
-            elif a=="save_as":
-                self.action_save_as()
-            elif a=="close":
-                self.action_close_file()
-            elif a=="quit":
-                self.action_quit()
+            try:
+                if a=="new":
+                    self.action_new_file()
+                elif a=="open":
+                    self.action_open_file()
+                elif a=="save":
+                    self.action_save_file()
+                elif a=="save_as":
+                    self.action_save_as()
+                elif a=="close":
+                    self.action_close_file()
+                elif a=="quit":
+                    self.action_quit()
+            except Exception as e:
+                self.notify(f"文件菜单操作失败: {e}", severity="error")
         self.push_screen(OptionListMenu(self._tr("menu_file"),items,cb))
     def _show_edit_menu(self):
         items=[{"label":self._tr("find"),"action":"find"},{"label":self._tr("replace"),"action":"replace"},{"label":self._tr("goto"),"action":"goto"},{"label":self._tr("format"),"action":"format"}]
         def cb(a):
-            if a=="find":
-                self.action_show_find()
-            elif a=="replace":
-                self.action_show_replace()
-            elif a=="goto":
-                self.action_goto_line()
-            elif a=="format":
-                self.action_format_document()
+            try:
+                if a=="find":
+                    self.action_show_find()
+                elif a=="replace":
+                    self.action_show_replace()
+                elif a=="goto":
+                    self.action_goto_line()
+                elif a=="format":
+                    self.action_format_document()
+            except Exception as e:
+                self.notify(f"编辑菜单操作失败: {e}", severity="error")
         self.push_screen(OptionListMenu(self._tr("menu_edit"),items,cb))
     def _show_tools_menu(self):
         items=[{"label":self._tr("settings"),"action":"settings"},{"label":self._tr("about"),"action":"about"},{"label":self._tr("terminal"),"action":"toggle_terminal"},{"label":self._tr("command_palette"),"action":"command_palette"},{"label":self._tr("compare_files"),"action":"compare_files"}]
@@ -1750,7 +2052,7 @@ class OneEditor(App):
                 if a=="settings":
                     self._show_settings()
                 elif a=="about":
-                    self.push_screen(AboutScreen())
+                    self._show_about()
                 elif a=="toggle_terminal":
                     self.action_toggle_terminal()
                 elif a=="command_palette":
@@ -1758,54 +2060,87 @@ class OneEditor(App):
                 elif a=="compare_files":
                     self.action_compare_files()
             except Exception as e:
-                self.notify(f"执行工具命令失败: {e}",severity="error")
+                self.notify(f"工具菜单操作失败: {e}", severity="error")
         self.push_screen(OptionListMenu(self._tr("menu_tools"),items,cb))
     def _show_plugins_menu(self):
-        self.push_screen(PluginsScreen(self))
+        try:
+            self.push_screen(PluginsScreen(self))
+        except Exception as e:
+            self.notify(f"打开插件管理失败: {e}", severity="error")
+            traceback.print_exc()
     def _show_settings(self):
         try:
             self.push_screen(SettingsScreen(self))
         except Exception as e:
-            self.notify(f"打开设置失败: {e}",severity="error")
+            self.notify(f"打开设置失败: {e}", severity="error", timeout=5)
+            traceback.print_exc()
+    def _show_about(self):
+        try:
+            self.push_screen(AboutScreen())
+        except Exception as e:
+            self.notify(f"打开关于失败: {e}", severity="error")
+            traceback.print_exc()
     def update_status_bar(self):
         tid=self.get_current_tab_id()
         if not tid or tid not in self._tab_data:
             return
         d=self._tab_data[tid]
         ta=d["textarea"]
-        title=d["title"]
         mod=self._modified.get(tid,False)
-        mod_mark=self._tr("status_modified") if mod else ""
+
+        # 确定模式及颜色（使用硬编码十六进制）
+        mode_color_map = {
+            "NORMAL": "#7aa2f7",
+            "MODIFIED": "#f38ba8",
+            "INSERT": "#9ece6a",
+            "VISUAL": "#e0af68",
+        }
+        if mod:
+            mode_text = "MODIFIED"
+        else:
+            mode_text = "NORMAL"
+        mode_color = mode_color_map.get(mode_text, "#7aa2f7")
+
+        # 左侧：模式（带颜色）
+        self.status_left.styles.background = mode_color
+        self.status_left.styles.color = "#1a1b26"  # $background
+        self.status_left.update(f" {mode_text} ")
+
+        # 中间：路径 + LSP
+        fp=d.get("filepath","")
+        if fp:
+            path_str=os.path.basename(fp)
+            dir_str=os.path.dirname(fp)
+            if len(dir_str)>25:
+                dir_str="…"+dir_str[-22:]
+            middle_text=f"{dir_str}/{path_str}"
+        else:
+            middle_text=d["title"]
+
+        if self.lsp.running and self._current_lang:
+            lsp_status=f"󰣇 {self._current_lang}"
+        else:
+            lsp_status="󰅙"
+
+        self.status_center.styles.background = "$surface"
+        self.status_center.styles.color = "$text"
+        # 添加三角形分隔符（通过边框）
+        self.status_left.styles.border_right = ("round", mode_color)
+        self.status_center.styles.border_left = ("round", mode_color)
+        self.status_center.update(f" {middle_text}  {lsp_status} ")
+
+        # 右侧：时钟 + 编码 + 行列 + 语言
+        now=datetime.now().strftime("%H:%M")
         cursor=ta.selection.start
         row,col=cursor
         total=len(ta.text.splitlines())
-        sel=ta.selected_text
-        sel_info=f" 已选 {len(sel)}" if sel else ""
         lang=ta.language or "plain"
-        fp=d.get("filepath")
-        size=""
-        if fp:
-            try:
-                s=Path(fp).stat().st_size
-                if s<1024:
-                    size=f" {s}B"
-                elif s<1024*1024:
-                    size=f" {s/1024:.1f}KB"
-                else:
-                    size=f" {s/(1024*1024):.1f}MB"
-            except:
-                pass
         enc=d.get("encoding","UTF-8")
-        le=d.get("line_ending","LF")
-        lsp_status=self._tr("status_lsp_disconnected")
-        if self.lsp.running and self._current_lang:
-            lsp_status=self._tr("status_lsp_connected")+f" ({self._current_lang})"
-        elif self.lsp.running and not self._current_lang:
-            lsp_status="不支持"
-        else:
-            lsp_status=self._tr("status_lsp_disconnected")
-        extra=f" | 匹配 {self._find_index+1}/{len(self._find_matches)}" if self._find_matches and self._find_index>=0 else ""
-        self.status_bar.update(f"{title} {mod_mark}  [{lang}] {enc} {le}{size}  {self._tr('status_line')} {row+1}/{total}  {self._tr('status_col')} {col+1}{sel_info}  |  {self._tr('status_lsp').format(status=lsp_status)}{extra}")
+        right_text=f" 󰅐 {now}  󰓤 {enc}   {row+1}:{col+1}   {lang} "
+        self.status_right.styles.background = "$surface"
+        self.status_right.styles.color = "$text"
+        self.status_right.update(right_text)
+
     def _load_state(self):
         if not CONFIG_FILE.exists():
             return
@@ -1818,7 +2153,8 @@ class OneEditor(App):
                 continue
             p=Path(fp)
             if p.exists() and p.is_file():
-                content=safe_read(fp)
+                enc, _ = self._get_file_encoding_and_ending(str(p))
+                content=safe_read(str(p), encoding=enc)
                 if content is not None:
                     self.add_new_tab(p.name,content,str(p.resolve()))
         if not self._tab_data:
@@ -2154,24 +2490,12 @@ class OneEditor(App):
     def action_goto_line(self):
         ta=self.get_current_text_area()
         if not ta or ta.read_only:
+            self.notify("没有可用的编辑器", severity="warning")
             return
-        total=len(ta.text.splitlines())
-        def cb(s):
-            try:
-                n=int(s.strip())
-            except:
-                self.notify(self._tr("invalid_line"),severity="error")
-                return
-            if n<1:
-                self.notify("行号必须大于0",severity="error")
-                return
-            if n>total:
-                self.notify(self._tr("line_out_of_range").format(total=total),severity="warning")
-                return
-            ta.cursor_location=(n-1,0)
-            ta.scroll_to((n-1,0),animate=False)
-            self.update_status_bar()
-        self.push_screen(InputScreen(self._tr("goto_line_prompt").format(total=total),cb))
+        self._show_find_replace("goto")
+    def _do_goto(self, line_num=None):
+        # 由 FindReplaceBar 的 _do_goto 调用
+        pass
     def on_directory_tree_file_selected(self,event):
         if event.path.is_file():
             self._open_file_by_path(event.path)
@@ -2203,15 +2527,23 @@ class OneEditor(App):
             elif op.op_type=='rename':
                 if undo:
                     op.path.rename(op.old_path)
+                else:
+                    # 重做时，把当前路径（即 new path）重命名回旧路径？但重命名操作应记住新旧名称，我们暂时简化，忽略重做
+                    pass
             elif op.op_type=='move':
                 if undo:
                     shutil.move(str(op.path),str(op.old_path))
+                else:
+                    shutil.move(str(op.old_path),str(op.path))
             elif op.op_type=='copy':
                 if undo:
                     if op.path.is_file():
                         op.path.unlink()
                     else:
                         shutil.rmtree(op.path)
+                else:
+                    # 重做复制较复杂，暂忽略
+                    pass
         except Exception as e:
             self.notify(f"操作失败: {e}",severity="error")
     def action_undo_filetree(self):
@@ -2272,7 +2604,7 @@ class OneEditor(App):
                     try:
                         old_path=path
                         path.rename(np)
-                        self._push_file_operation(FileOperation('rename',np,old_path=old_path))
+                        self._push_file_operation(FileOperation('rename',np,old_data=None,new_data=None,old_path=old_path))
                         self._refresh_file_tree()
                         self.notify(f"已重命名: {old_path.name} -> {newname}",severity="information")
                         abs_new=str(np.resolve())
@@ -2421,7 +2753,13 @@ class OneEditor(App):
         if len(self._tab_data)>=9:
             self.notify("最多同时打开 9 个文件",severity="error")
             return
-        content=safe_read(abs_path)
+        enc, le = self._get_file_encoding_and_ending(abs_path)
+        try:
+            with open(abs_path, "r", encoding=enc) as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
         if content is None:
             self.notify(f"无法读取文件: {path}",severity="error")
             return
@@ -2433,7 +2771,6 @@ class OneEditor(App):
                 ta.language=lang
             except:
                 pass
-        enc,le=self._get_file_encoding_and_ending(abs_path)
         self._tab_data[tid]["encoding"]=enc
         self._tab_data[tid]["line_ending"]=le
         self._start_lsp_for_file(abs_path,content)
@@ -2548,8 +2885,6 @@ class OneEditor(App):
     def on_key(self,event):
         menu=self.query_one("#completion-menu")
         if not menu.visible:
-            if event.key=="escape" and self._is_dragging:
-                self._cancel_drag()
             return
         if event.key=="up":
             menu.move_up()
@@ -2656,6 +2991,7 @@ class OneEditor(App):
             return
         ed=self.get_current_text_area()
         if not ed or ed.read_only:
+            self.notify("没有可用的编辑器", severity="warning")
             return
         row,col=ed.cursor_location
         self.lsp.did_change(ed.text)
@@ -2663,7 +2999,11 @@ class OneEditor(App):
             if not n:
                 return
             self.run_worker(self._do_rename(row,col,n), exclusive=True, group="rename")
-        self.push_screen(InputScreen(self._tr("rename_prompt"),cb))
+        try:
+            self.push_screen(InputScreen(self._tr("rename_prompt"),cb))
+        except Exception as e:
+            self.notify(f"打开重命名符号失败: {e}", severity="error")
+            traceback.print_exc()
     async def _do_rename(self,row,col,new_name):
         result=await self.lsp.rename(row,col,new_name)
         if not result:
@@ -2715,19 +3055,42 @@ class OneEditor(App):
             self._apply_code_action(a)
         self.push_screen(OptionListMenu(self._tr("code_action"),items,cb))
     def _apply_code_action(self,action):
-        if "edit" in action:
-            edits=action["edit"]
-            ed=self.get_current_text_area()
-            if ed and "changes" in edits:
-                for uri,edit_list in edits["changes"].items():
-                    if uri==self._current_uri:
-                        for edit in reversed(edit_list):
-                            r=edit.get("range",{})
-                            s=r.get("start",{})
-                            e=r.get("end",{})
-                            ed.replace(edit.get("newText",""), (s.get("line",0),s.get("character",0)), (e.get("line",0),e.get("character",0)))
-        if "command" in action:
-            self.notify(f"执行命令: {action['command']['title']}",severity="information")
+        try:
+            if "edit" in action:
+                edits=action["edit"]
+                ed=self.get_current_text_area()
+                if ed and isinstance(edits, dict):
+                    if "changes" in edits and isinstance(edits["changes"], dict):
+                        for uri, edit_list in edits["changes"].items():
+                            if uri == self._current_uri and isinstance(edit_list, list):
+                                for edit in reversed(edit_list):
+                                    if isinstance(edit, dict):
+                                        r = edit.get("range", {})
+                                        s = r.get("start", {}) if isinstance(r, dict) else {}
+                                        e = r.get("end", {}) if isinstance(r, dict) else {}
+                                        ed.replace(
+                                            edit.get("newText", ""),
+                                            (s.get("line", 0), s.get("character", 0)),
+                                            (e.get("line", 0), e.get("character", 0))
+                                        )
+                    elif "documentChanges" in edits and isinstance(edits["documentChanges"], list):
+                        for change in edits["documentChanges"]:
+                            if isinstance(change, dict) and change.get("textDocument", {}).get("uri") == self._current_uri:
+                                for edit in reversed(change.get("edits", [])):
+                                    if isinstance(edit, dict):
+                                        r = edit.get("range", {})
+                                        s = r.get("start", {}) if isinstance(r, dict) else {}
+                                        e = r.get("end", {}) if isinstance(r, dict) else {}
+                                        ed.replace(
+                                            edit.get("newText", ""),
+                                            (s.get("line", 0), s.get("character", 0)),
+                                            (e.get("line", 0), e.get("character", 0))
+                                        )
+            if "command" in action:
+                self.notify(f"执行命令: {action['command']['title']}", severity="information")
+        except Exception as e:
+            self.notify(f"应用代码操作失败: {e}", severity="error")
+            traceback.print_exc()
     def action_format_document(self):
         if not self.lsp.running:
             self.notify(self._tr("lsp_not_running"),severity="warning")
@@ -2861,11 +3224,16 @@ class OneEditor(App):
             self.notify(self._tr("no_file"),severity="warning")
             return
         if Path(fp).suffix.lower()=='.py':
-            self.output_panel.display=True
-            self.output_panel.clear()
-            self.run_worker(self._run_process(['python','-m','pdb',fp],fp), exclusive=True, group="debug")
+            try:
+                if os.name == 'nt':
+                    subprocess.Popen(['start', 'cmd', '/k', 'python', '-m', 'pdb', fp], shell=True)
+                else:
+                    subprocess.Popen(['xterm', '-e', 'python', '-m', 'pdb', fp])
+                self.notify("调试器已在外部终端启动", severity="information")
+            except Exception as e:
+                self.notify(f"启动调试失败: {e}", severity="error")
         else:
-            self.notify(self._tr("debug_py_only"),severity="information")
+            self.notify(self._tr("debug_py_only"), severity="information")
     async def _run_process(self,cmd,cwd=None,shell=False):
         if cwd and Path(cwd).is_file():
             cwd=str(Path(cwd).parent)
@@ -2946,11 +3314,19 @@ class OneEditor(App):
                 getattr(self,f"action_{a}")()
             else:
                 self.notify(f"未知命令: {a}",severity="warning")
-        self.push_screen(CommandPalette(cmds,cb))
+        try:
+            self.push_screen(CommandPalette(cmds,cb))
+        except Exception as e:
+            self.notify(f"打开命令面板失败: {e}", severity="error")
+            traceback.print_exc()
     def action_compare_files(self):
         tabs=[d for d in self._tab_data.values() if not d.get("is_welcome",False)]
         if len(tabs)>=2:
-            self.push_screen(DiffScreen(tabs[0]["textarea"].text, tabs[1]["textarea"].text, tabs[0]["title"], tabs[1]["title"]))
+            try:
+                self.push_screen(DiffScreen(tabs[0]["textarea"].text, tabs[1]["textarea"].text, tabs[0]["title"], tabs[1]["title"]))
+            except Exception as e:
+                self.notify(f"文件对比失败: {e}", severity="error")
+                traceback.print_exc()
         else:
             self.notify(self._tr("no_diff_tabs"),severity="warning")
     def focus_editor(self):
