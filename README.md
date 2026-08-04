@@ -163,20 +163,28 @@ one-editor/
 ```
 
 ## 已知问题
-- 设置页面无法打开
-- 转到行界面无法打开
-- 文件对比无法打开
-- Ollama界面存在问题
-- 标签页存在问题
-- 快速修复存在问题
-- Python调试存在问题
-- 文件树存在问题
-- 快捷键存在问题
-- 很多东西存在问题
+- 部分按钮被遮挡
+- 调试仅支持Python（PDB）
 ## 未来路线
-- [] 修复已知问题
-- [] 推出其它功能 
+```
+1.0.x
+─────┬──────────┬────────────────────────────┬───────────────────────────┬───────────────────────►
+     │ Jul 2026 │ Aug 2026                   │ Sep 2026 — Dec 2026 / 2027│ Post‑2027
+     │Pre‑release│ Bug‑Fix                   │ Long‑term Bug‑Fix Maintenance │ End‑of‑Support
+     └──────────┴────────────────────────────┴───────────────────────────┴───────────────────────┘
 
+
+1.1.x (TBD, unconfirmed schedule)
+───────────────────────────────┬──────────────────┬──────────────────┬───────────────────────►
+                               │ CY 2027          │ + 2 calendar months │ After maintenance window
+                               │ Pre‑release      │ Bug‑Fix Phase    │ End‑of‑Support
+                               └──────────────────┴──────────────────┴───────────────────────┘
+
+Legend:
+  Pre‑release    : Feature‑complete pre‑release builds, for early testing
+  Bug‑Fix        : Only bug & security patches, no new feature development
+  End‑of‑Support : No further updates, fixes or security patches
+```
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request。请确保代码符合 PEP8，并包含适当的注释。
