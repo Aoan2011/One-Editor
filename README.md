@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://python.org)
 [![Textual](https://img.shields.io/badge/Textual-0.15%2B-green)](https://textual.textualize.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-![GitHub commit activity](https://img.shields.io/github/commit-activity/w/Aoan2011/One-Editor)
+![GitHub commit activity](https://img.shields.io/github/commit-activity/y/Aoan2011/One-Editor)
 ![GitHub last commit](https://img.shields.io/github/last-commit/Aoan2011/One-Editor)
 ![GitHub Created At](https://img.shields.io/github/created-at/Aoan2011/One-Editor)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/Aoan2011/One-Editor/total)
@@ -199,3 +199,9 @@ MIT 想干什么干什么
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Aoan2011/One-Editor&type=timeline&legend=top-left&sealed_token=lk1ftLhnXQnPWsroyelK6zDsfPPeOLbPteST0xznVh5YAo3eiSnh-cu1wahiKzPJYoxSlGlyrrMsLR9-ig4NdpNu0E8SO7qeTAClLLUHfnj2veSpRSjZnw" />
  </picture>
 </a>
+
+---
+
+# Buy me a coffee
+
+![Buy me a coffee](buy_me_a_coffee.png) 
