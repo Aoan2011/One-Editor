@@ -19,7 +19,8 @@
 ![GitHub Repo stars](https://img.shields.io/github/stars/Aoan2011/One-Editor)
 ![GitHub Tag](https://img.shields.io/github/v/tag/Aoan2011/One-Editor)
 
-> # 因author业务调整、高中学业繁忙，**One Editor** 现已暂停维护，随缘更新，谢谢各位的关注🙏
+> # 因author业务调整、高中学业繁忙，自2026年08月07日暂停维护**One Editor**，随缘更新，谢谢各位的关注🙏
+
 
 ---
 
