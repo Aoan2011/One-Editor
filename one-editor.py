@@ -212,7 +212,8 @@ class InputBar(Horizontal):
     }
     InputBar > Button {
         margin: 0 1;
-        height: 1;
+        height: 3;
+        min-width: 8;
     }
     """
     def __init__(self, app):
@@ -673,72 +674,6 @@ class GlobalSearchScreen(Screen):
     def on_key(self, event):
         if event.key == "escape":
             self.dismiss()
-
-# ========== 新版 CommandPalette（模糊搜索） ==========
-class CommandPalette(Screen):
-    CSS = """
-    CommandPalette { background: rgba(0,0,0,0.6); align: center middle; }
-    #cmd-palette {
-        background: $surface;
-        padding: 1 2;
-        border: round $accent;
-        width: 60;
-        height: auto;
-        max-height: 60%;
-        overflow-y: auto;
-    }
-    #cmd-input { width: 1fr; margin-bottom: 1; }
-    #cmd-list { height: 1fr; }
-    """
-    def __init__(self, commands: dict, callback):
-        super().__init__()
-        self.commands = commands  # dict: action -> description
-        self.callback = callback
-        self._filtered = []
-        self._input = None
-        self._list = None
-
-    def compose(self):
-        with Container(id="cmd-palette"):
-            self._input = Input(placeholder="输入命令...", id="cmd-input")
-            yield self._input
-            self._list = OptionList(id="cmd-list")
-            yield self._list
-            yield Button(self.app._tr("cancel"), id="cmd-cancel")
-
-    def on_mount(self):
-        self._update_list("")
-
-    def on_input_changed(self, event):
-        self._update_list(event.value)
-
-    def on_input_submitted(self, event):
-        if self._list.highlighted is not None:
-            self._select(self._list.highlighted)
-
-    def _update_list(self, query: str):
-        self._list.clear_options()
-        q = query.lower()
-        self._filtered = []
-        for action, desc in self.commands.items():
-            if q in action.lower() or q in desc.lower():
-                self._filtered.append((action, desc))
-        for idx, (action, desc) in enumerate(self._filtered):
-            self._list.add_option(Option(f"{desc}   ({action})", id=f"cmd_{idx}"))
-
-    def on_option_list_option_selected(self, event):
-        idx = int(event.option.id.split("_")[1])
-        self._select(idx)
-
-    def _select(self, idx):
-        if 0 <= idx < len(self._filtered):
-            action, desc = self._filtered[idx]
-            self.dismiss()
-            self.callback(action)
-
-    def on_key(self, event):
-        if event.key == "escape":
-            self.dismiss()
 # ========== 其他现有类（保持原样） ==========
 class AxiomEditor(TextArea):
     def __init__(self, *args, show_line_numbers=True, language=None, **kwargs):
@@ -747,7 +682,7 @@ class AxiomEditor(TextArea):
         super().__init__(*args, **kwargs)
         self.show_line_numbers = show_line_numbers
         self.language = language
-        self.read_only = False  # 关键修复
+        self.read_only = False
 
     def on_mount(self):
         self.indent_width=4
@@ -1201,16 +1136,18 @@ class FileTreeContextMenu(OptionListMenu):
             pass
         def cb(action):
             app=self.app
-            try:
-                app._context_path=self.path
-                if action is None:
-                    return
-                if action.startswith("git_"):
-                    app._git_action(action)
-                else:
-                    app._filetree_menu_callback(action)
-            except Exception as e:
-                app.notify(f"文件树操作失败: {e}", severity="error", timeout=5)
+            def do_action():
+                try:
+                    app._context_path=self.path
+                    if action is None:
+                        return
+                    if action.startswith("git_"):
+                        app._git_action(action)
+                    else:
+                        app._filetree_menu_callback(action)
+                except Exception as e:
+                    app.notify(f"文件树操作失败: {e}", severity="error", timeout=5)
+            app.call_after_refresh(do_action)
         super().__init__("文件树",items,cb)
 
 class TopMenuBar(Horizontal):
@@ -1238,7 +1175,7 @@ class SymbolListScreen(OptionListMenu):
         super().__init__("符号列表",items,cb)
 
 class FileBrowserPanel(Vertical):
-    DEFAULT_CSS = """FileBrowserPanel{height:20;background:$surface;border:tall $primary;display:none;padding:0 1;}#browser-layout{height:1fr;}#browser-tree{width:30;border-right:tall $primary;padding:0 1;overflow-y:auto;}#browser-input-area{width:1fr;padding:0 1;}#browser-input{width:1fr;margin:1 0;}#browser-buttons{height:3;padding:1 0;}.browser-btn{margin:0 1;}"""
+    DEFAULT_CSS = """FileBrowserPanel{height:20;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}#browser-layout{height:1fr;overflow-x:auto;overflow-y:auto;}#browser-tree{width:30;border-right:tall $primary;padding:0 1;overflow-y:auto;}#browser-input-area{width:1fr;padding:0 1;}#browser-input{width:1fr;margin:1 0;}#browser-buttons{height:3;padding:1 0;}.browser-btn{margin:0 1;}"""
     def __init__(self,parent_app,mode="open",callback=None):
         super().__init__()
         self.parent_app=parent_app
@@ -1424,13 +1361,14 @@ class PluginDetailScreen(Screen):
         yield Label(f"插件名称: {self.plugin_name}")
         yield Label(f"类型: {'built-in' if self.is_builtin else 'external'}")
         yield Label(f"介绍: {self.desc}")
+        yield Label(f"作者: @Aoan2011")           # 新增作者信息
         yield Label(f"设置格式: {self.settings_format}")
         yield Button("关闭", id="close")
     def on_button_pressed(self, event):
         self.dismiss()
 
 class PluginsScreen(Screen):
-    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:2 3;border:round $accent;width:80;height:auto;max-height:80%;overflow-y:auto;overflow-x:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:3;padding:0 1;margin:0 0 1 0;background:$surface;border:none;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-features{width:1fr;}.toggle-btn{width:12;border:none;background:$primary;color:$text;}.toggle-btn.off{background:$surface;color:$text-muted;}.settings-btn{width:8;border:none;background:$accent;color:$text;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}.feature-row{height:2;padding:0 1;}"""
+    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:2 3;border:round $accent;width:90;height:auto;max-height:80%;overflow-x:auto;overflow-y:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:3;padding:0 1;margin:0 0 1 0;background:$surface;border:none;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-features{width:1fr;}.toggle-btn{width:12;border:none;background:$primary;color:$text;}.toggle-btn.off{background:$surface;color:$text-muted;}.settings-btn{width:8;border:none;background:$accent;color:$text;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}.feature-row{height:2;padding:0 1;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -1441,9 +1379,9 @@ class PluginsScreen(Screen):
             default[lang]={"enabled":True,"features":{"completion":True,"definition":True,"hover":True,"diagnostics":True,"rename":True,"code_action":True,"formatting":True},"compile_cmd":"","run_cmd":""}
         default["competitive-companion"]={"enabled":False,"features":{"problem_parsing":False,"test_runner":False},"description":self.app._tr("plugin_desc")}
         # 新增 git/frogmouth/ollama 插件
-        default["git"]={"enabled":True,"features":{"status":True,"stage":True,"commit":True},"description":"Git 集成"}
-        default["frogmouth"]={"enabled":False,"features":{"preview":True},"description":"Markdown 预览"}
-        default["ollama"]={"enabled":True,"features":{"chat":True,"insert":True},"description":"Ollama 对话"}
+        default["git"]={"enabled":True,"features":{"status":True,"stage":True,"commit":True},"description":"Git 集成：提供文件状态、暂存、提交等操作"}
+        default["frogmouth"]={"enabled":False,"features":{"preview":True},"description":"Markdown 预览：使用 frogmouth 打开 MD 文件"}
+        default["ollama"]={"enabled":True,"features":{"chat":True,"insert":True},"description":"Ollama 对话：支持流式对话和代码插入"}
         if PLUGIN_CONFIG_FILE.exists():
             try:
                 cfg=json.load(open(PLUGIN_CONFIG_FILE,"r",encoding="utf-8"))
@@ -1756,18 +1694,67 @@ class OneEditor(App):
         Binding("ctrl+shift+m","show_diagnostics","诊断面板",show=False),
     ]
     CSS = """
-    #main-layout{layout:horizontal;}#sidebar{width:30;background:$surface;border-right:tall $primary;padding:0 1;display:block;}#editor-area{width:1fr;layers:default autocomplete overlay;}#menu-bar{height:1;background:$surface;padding:0 1;layout:horizontal;}.menu-btn{padding:0 2;background:$surface;color:$text;border:none;height:1;}.menu-btn:hover{background:$panel;}#diag-counter{dock:right;padding:0 2;background:$surface;color:$text;height:1;border:none;}#diag-counter:hover{background:$panel;}#tab-bar-container{height:3;background:$surface;layout:horizontal;border-bottom:tall $primary;}.tab-scroll-btn{height:2;width:3;background:$surface;border:none;color:$text;}.tab-scroll-btn:hover{background:$panel;}#tab-scroll{height:2;background:$surface;overflow-x:auto;scrollbar-size:1 1;padding:0 1;}#tab-bar{width:auto;height:2;background:$surface;}.tab-button-container{height:2;display:block;padding:0 1;}.tab-button{padding:0 2;background:$surface;color:$text;border:none;height:2;margin:0;border-bottom:solid transparent;max-width:15;overflow:hidden;}.tab-button:hover{background:$panel;}.tab-button.active{background:$surface;color:$text;border-bottom:solid $primary;text-style:bold;}.tab-close{padding:0 1;margin:0 1 0 0;background:transparent;color:$text-muted;border:none;height:2;min-width:2;display:block;}.tab-close:hover{background:$error;color:$text;}#content-container{height:1fr;}TextArea{border:none;background:$surface;}#status-bar{background:$primary;color:$text;padding:0 1;height:1;}#find-replace-bar{height:3;background:$surface;padding:0 1;display:none;}#find-replace-bar>Input{width:1fr;margin:0 1;}#find-replace-bar>Button{margin:0 1;height:1;}.find-btn{padding:0 1;background:$surface;color:$text;border:none;height:1;}.find-btn:hover{background:$panel;}#file-browser{height:20;background:$surface;border:tall $primary;display:none;padding:0 1;}#browser-layout{height:1fr;}#browser-tree{width:30;border-right:tall $primary;padding:0 1;overflow-y:auto;}#browser-input-area{width:1fr;padding:0 1;}#browser-input{width:1fr;margin:1 0;}#browser-buttons{height:3;padding:1 0;}.browser-btn{margin:0 1;}#completion-menu{layer:autocomplete;display:none;height:auto;max-height:10;width:auto;min-width:30;max-width:60;border:round $accent;background:$surface;padding:0;}.tree-resize-handle{width:3;background:$surface;border-right:tall $primary;}#tree-container{height:1fr;width:30;background:$surface;}.tree-node.drag-target{background:$accent 50%;}.welcome-placeholder{color:$text-muted;text-align:center;padding:4;}
+    #main-layout{layout:horizontal;}
+    #sidebar{width:30;background:$surface;border-right:tall $primary;padding:0 1;display:block;}
+    #editor-area{width:1fr;layers:default autocomplete overlay;}
+    #menu-bar{height:1;background:$surface;padding:0 1;layout:horizontal;}
+    .menu-btn{padding:0 2;background:$surface;color:$text;border:none;height:1;}
+    .menu-btn:hover{background:$panel;}
+    #diag-counter{dock:right;padding:0 2;background:$surface;color:$text;height:1;border:none;}
+    #diag-counter:hover{background:$panel;}
+    #tab-bar-container{height:3;background:$surface;layout:horizontal;border-bottom:tall $primary;}
+    .tab-scroll-btn{height:2;width:3;background:$surface;border:none;color:$text;}
+    .tab-scroll-btn:hover{background:$panel;}
+    #tab-scroll{height:2;background:$surface;overflow-x:auto;scrollbar-size:1 1;padding:0 1;}
+    #tab-bar{width:auto;height:2;background:$surface;}
+    .tab-button-container{height:2;display:block;padding:0 1;}
+    .tab-button{padding:0 2;background:$surface;color:$text;border:none;height:2;margin:0;border-bottom:solid transparent;max-width:15;overflow:hidden;}
+    .tab-button:hover{background:$panel;}
+    .tab-button.active{background:$surface;color:$text;border-bottom:solid $primary;text-style:bold;}
+    .tab-close{padding:0 1;margin:0 1 0 0;background:transparent;color:$text-muted;border:none;height:2;min-width:2;display:block;}
+    .tab-close:hover{background:$error;color:$text;}
+    #content-container{height:1fr;}
+    TextArea{border:none;background:$surface;}
+    #status-bar{background:$primary;color:$text;padding:0 1;height:1;}
+    #find-replace-bar{height:3;background:$surface;padding:0 1;display:none;}
+    #find-replace-bar>Input{width:1fr;margin:0 1;}
+    #find-replace-bar>Button{margin:0 1;height:3;}
+    .find-btn{padding:0 1;background:$surface;color:$text;border:none;height:1;}
+    .find-btn:hover{background:$panel;}
+    #file-browser{height:20;background:$surface;border:tall $primary;display:none;padding:0 1;}
+    #browser-layout{height:1fr;}
+    #browser-tree{width:30;border-right:tall $primary;padding:0 1;overflow-y:auto;}
+    #browser-input-area{width:1fr;padding:0 1;}
+    #browser-input{width:1fr;margin:1 0;}
+    #browser-buttons{height:3;padding:1 0;}
+    .browser-btn{margin:0 1;}
+    #completion-menu{layer:autocomplete;display:none;height:auto;max-height:10;width:auto;min-width:30;max-width:60;border:round $accent;background:$surface;padding:0;}
+    .tree-resize-handle{width:3;background:$surface;border-right:tall $primary;}
+    #tree-container{height:1fr;width:30;background:$surface;}
+    .tree-node.drag-target{background:$accent 50%;}
+    .welcome-placeholder{color:$text-muted;text-align:center;padding:4;}
     #goto-bar {height:3;background:$surface;padding:0 1;display:none;}
     #goto-bar>Input {width:1fr;margin:0 1;}
-    #goto-bar>Button {margin:0 1;height:1;min-width:8;}
+    #goto-bar>Button {margin:0 1;height:3;min-width:8;}
     #terminal-buttons Button, #ollama-buttons Button {
         width: auto;
         min-width: 10;
         padding: 0 2;
-        height: 1;
+        height: 3;
         margin: 0 1;
     }
+    #browser-buttons Button {height:3;min-width:8;margin:0 1;}
     """
+    def _get_diagnostics_for_path(self, path):
+        """根据文件路径获取 LSP 错误/警告数量"""
+        try:
+            uri = path_to_uri(str(Path(path).resolve()))
+            diags = self._diagnostics_cache.get(uri, [])
+            errors = sum(1 for d in diags if d.get("severity", 1) <= 1)
+            warnings = sum(1 for d in diags if d.get("severity", 1) == 2)
+            return errors, warnings
+        except:
+            return 0, 0
     def compose(self):
         yield Header()
         yield TopMenuBar(id="menu-bar")
@@ -1863,6 +1850,7 @@ class OneEditor(App):
             else:
                 self.show_tab(next(iter(self._tab_data.keys())))
         self.file_tree.display=self._show_file_tree
+        self.file_tree.set_diagnostics_provider(self._get_diagnostics_for_path)  # 新增
         self.file_tree.focus()
         self._apply_tree_width()
         if self._autosave_interval>0:
@@ -3702,28 +3690,29 @@ class OneEditor(App):
         return cmds
 
     def action_command_palette(self):
-        cmds=self._get_commands()
+        cmds = self._get_commands()
         def cb(a):
-            if a=="command_palette":
+            if a == "command_palette":
                 return
-            if a=="change_theme":
-                themes=["textual-dark","textual-light","dracula","nord"]
+            if a == "change_theme":
+                themes = ["textual-dark", "textual-light", "dracula", "nord"]
                 try:
-                    idx=themes.index(self.theme)
-                    next_theme=themes[(idx+1)%len(themes)]
+                    idx = themes.index(self.theme)
+                    next_theme = themes[(idx + 1) % len(themes)]
                 except:
-                    next_theme=themes[0]
-                self.theme=next_theme
-                self._settings["theme"]=next_theme
+                    next_theme = themes[0]
+                self.theme = next_theme
+                self._settings["theme"] = next_theme
                 self._save_settings()
-                self.notify(self._tr("theme_changed").format(theme=next_theme),severity="information")
+                self.notify(self._tr("theme_changed").format(theme=next_theme), severity="information")
                 return
-            if hasattr(self,f"action_{a}"):
-                getattr(self,f"action_{a}")()
+            if hasattr(self, f"action_{a}"):
+                getattr(self, f"action_{a}")()
             else:
-                self.notify(f"未知命令: {a}",severity="warning")
+                self.notify(f"未知命令: {a}", severity="warning")
+        items = [{"label": desc, "action": act} for act, desc in cmds.items()]
         try:
-            self.push_screen(CommandPalette(cmds,cb))
+            self.push_screen(OptionListMenu(self._tr("command_palette"), items, cb))
         except Exception as e:
             self.notify(f"打开命令面板失败: {e}", severity="error")
             traceback.print_exc()
