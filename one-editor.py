@@ -39,6 +39,7 @@ from companion import CompanionServer
 from translations import TR
 from gitstatus import GitStatusTree
 from git import Repo, InvalidGitRepositoryError
+import previewer
 
 VERSION = "1.1.0"
 CONFIG_DIR = Path.home() / ".one-editor"
@@ -74,7 +75,7 @@ class FileOperation:
     def __init__(self,op_type,path,old_data=None,new_data=None,old_path=None):
         self.op_type=op_type; self.path=path; self.old_data=old_data; self.new_data=new_data; self.old_path=old_path
 
-class InputScreen(Screen):
+class InputScreen(ModalScreen):
     def __init__(self,prompt,callback): super().__init__(); self.prompt=prompt; self.callback=callback
     def compose(self):
         try:
@@ -308,22 +309,29 @@ class OutputPanel(Vertical):
         margin: 0;
     }
     OutputPanel > Horizontal#output-header {
-        height: 1;
+        height: 3;
         background: $surface;
         border-bottom: tall $primary;
         align: left middle;
     }
     #output-title {
         width: 1fr;
-        color: $text-muted;
+        color: $text;
+        padding: 0 1;
+        text-style: bold;
     }
     #output-close {
         dock: right;
-        background: $surface;
+        background: $error;
         color: $text;
         border: none;
-        height: 1;
-        min-width: 2;
+        height: 3;
+        min-width: 4;
+        content-align: center middle;
+    }
+    #output-close:hover {
+        background: $warning;
+        color: $text;
     }
     OutputPanel > TextArea {
         border: none;
@@ -333,12 +341,21 @@ class OutputPanel(Vertical):
     """
     def compose(self):
         with Horizontal(id="output-header"):
-            yield Label("输出", id="output-title")
-            yield Button("✕", id="output-close")
+            self.output_title = Label("输出", id="output-title")
+            yield self.output_title
+            yield Button("✕", id="output-close", variant="error")
         self.output_area=ReadOnlyTextArea(language=None,id="output-area")
         yield self.output_area
+
+    def set_command(self, cmd):
+        """设置当前运行/构建的命令"""
+        if isinstance(cmd, list):
+            cmd = " ".join(cmd)
+        self.output_title.update(f"运行中: {cmd}")
+
     def clear(self):
         self.output_area.text=""
+
     def on_button_pressed(self, event):
         if event.button.id == "output-close":
             self.display = False
@@ -451,7 +468,7 @@ class TerminalPanel(Vertical):
         if lines>0:
             self.call_after_refresh(lambda: self.output_area.scroll_to((lines-1,0),animate=False))
 
-class DiagnosticScreen(Screen):
+class DiagnosticScreen(ModalScreen):
     CSS = """DiagnosticScreen{background:rgba(0,0,0,0.6);align:center middle;}#diag-container{background:$surface;padding:1 2;border:round $accent;width:70;height:30;overflow-y:auto;}.diag-item{margin:0 0 1 0;padding:0 1;width:1fr;border:none;text-align:left;}.diag-item:hover{background:$panel;}.diag-error{color:$error;}.diag-warning{color:$warning;}#diag-header{height:1;background:$surface;margin-bottom:1;}#diag-close{width:1fr;border:none;background:$surface;color:$text;dock:right;}#diag-close:hover{background:$error;color:$text;}"""
     def __init__(self,diagnostics,app):
         super().__init__()
@@ -492,7 +509,7 @@ class DiagnosticScreen(Screen):
         if self.app:
             self.app.focus_editor()
 
-class DiffScreen(Screen):
+class DiffScreen(ModalScreen):
     CSS = """DiffScreen{background:rgba(0,0,0,0.6);align:center middle;}#diff-container{background:$surface;padding:1 2;border:round $accent;width:90;height:80%;overflow-y:auto;}#diff-area{height:1fr;border:none;}#diff-close{margin-top:1;width:1fr;}"""
     def __init__(self,left_text,right_text,left_title="旧",right_title="新"):
         super().__init__()
@@ -520,7 +537,7 @@ class DiffScreen(Screen):
         if self.app:
             self.app.focus_editor()
 
-class AboutScreen(Screen):
+class AboutScreen(ModalScreen):
     CSS = """AboutScreen{background:rgba(0,0,0,0.6);align:center middle;}#about-container{background:$surface;padding:2 3;border:round $accent;width:55;height:auto;}#about-title{text-style:bold;text-align:center;margin:1 0;}#about-version{text-align:center;color:$text-muted;}#about-close{margin-top:2;width:1fr;}#ascii-art{text-align:center;text-style:bold;margin:1 0;}"""
     def compose(self):
         with Container(id="about-container"):
@@ -571,7 +588,7 @@ class AboutScreen(Screen):
             self.app.focus_editor()
 
 # ========== 新增 GlobalSearchScreen ==========
-class GlobalSearchScreen(Screen):
+class GlobalSearchScreen(ModalScreen):
     CSS = """
     GlobalSearchScreen { background: rgba(0,0,0,0.6); align: center middle; }
     #global-search-container {
@@ -676,7 +693,7 @@ class GlobalSearchScreen(Screen):
             self.dismiss()
 
 # ========== 新版 CommandPalette（模糊搜索） ==========
-class CommandPalette(Screen):
+class CommandPalette(ModalScreen):
     CSS = """
     CommandPalette { background: rgba(0,0,0,0.6); align: center middle; }
     #cmd-palette {
@@ -1240,7 +1257,51 @@ class SymbolListScreen(OptionListMenu):
         super().__init__("符号列表",items,cb)
 
 class FileBrowserPanel(Vertical):
-    DEFAULT_CSS = """FileBrowserPanel{height:20;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}#browser-layout{height:1fr;overflow-x:auto;overflow-y:auto;}#browser-tree{width:30;border-right:tall $primary;padding:0 1;overflow-y:auto;}#browser-input-area{width:1fr;padding:0 1;}#browser-input{width:1fr;margin:1 0;}#browser-buttons{height:3;padding:1 0;}.browser-btn{margin:0 1;}"""
+    DEFAULT_CSS = """FileBrowserPanel{
+        height: auto;              /* 改为自适应高度 */
+        max-height: 40;            /* 最大高度限制，超出会滚动 */
+        background: $surface;
+        border: tall $primary;
+        display: none;
+        padding: 0 1;
+        margin: 0;
+        overflow-y: auto;          /* 外层开启竖向滚动条 */
+    }
+    #browser-layout{
+        height: 1fr;
+        min-height: 0;             /* 关键：允许内部的子元素被压缩，触发滚动 */
+        overflow-x: auto;
+        overflow-y: auto;
+    }
+    #browser-tree{
+        width: 30;
+        border-right: tall $primary;
+        padding: 0 1;
+        overflow-y: auto;
+        height: 100%;              /* 占满可滚动区域 */
+    }
+    #browser-input-area{
+        width: 1fr;
+        padding: 0 1;
+        height: auto;
+    }
+    #browser-input{
+        width: 1fr;
+        margin: 1 0;
+    }
+    #browser-buttons{
+        height: auto;              /* 取消固定高度，防止字被截断 */
+        padding: 1 0;
+        align: center middle;
+    }
+    .browser-btn{
+        margin: 0 1;
+        width: auto;
+        min-width: 10;
+        height: 3;                 /* 确保按钮有足够高度 */
+        padding: 0 2;              /* 给文字左右留出空间 */
+        content-align: center middle;
+    }"""
     def __init__(self,parent_app,mode="open",callback=None):
         super().__init__()
         self.parent_app=parent_app
@@ -1307,7 +1368,7 @@ class FileBrowserPanel(Vertical):
         self.input.focus()
 
 # ---------- 设置页面 ----------
-class SettingsScreen(Screen):
+class SettingsScreen(ModalScreen):
     CSS = """SettingsScreen{background:rgba(0,0,0,0.6);align:center middle;}#settings-container{background:$surface;padding:2 3;border:round $accent;width:60;height:auto;max-height:80%;overflow-y:auto;}#settings-container>Label{margin:1 0;}#settings-container>Select,#settings-container>Input,#settings-container>Checkbox{margin:0 0 1 0;}.settings-row{height:3;padding:0 1;}"""
     def __init__(self,app):
         super().__init__()
@@ -1415,7 +1476,7 @@ class SettingsScreen(Screen):
             self.app.focus_editor()
 
 # ---------- 插件页面 ----------
-class PluginDetailScreen(Screen):
+class PluginDetailScreen(ModalScreen):
     def __init__(self, name, desc, is_builtin=True, settings_format=""):
         super().__init__()
         self.plugin_name = name
@@ -1431,8 +1492,9 @@ class PluginDetailScreen(Screen):
     def on_button_pressed(self, event):
         self.dismiss()
 
-class PluginsScreen(Screen):
-    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:2 3;border:round $accent;width:80;height:auto;max-height:80%;overflow-y:auto;overflow-x:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:3;padding:0 1;margin:0 0 1 0;background:$surface;border:none;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-features{width:1fr;}.toggle-btn{width:12;border:none;background:$primary;color:$text;}.toggle-btn.off{background:$surface;color:$text-muted;}.settings-btn{width:8;border:none;background:$accent;color:$text;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}.feature-row{height:2;padding:0 1;}"""
+class PluginsScreen(ModalScreen):
+    # 优化布局：增加行高，自动宽度，防止文字被截断
+    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:2 3;border:round $accent;width:80;height:auto;max-height:80%;overflow-y:auto;overflow-x:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:auto;min-height:4;padding:0 1;margin:0 0 1 0;background:$surface;border:none;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-features{width:1fr;}.toggle-btn{width:auto;min-width:12;height:3;border:none;background:$primary;color:$text;padding:0 2;}.toggle-btn.off{background:$surface;color:$text-muted;}.settings-btn{width:auto;min-width:8;height:3;border:none;background:$accent;color:$text;padding:0 2;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}.feature-row{height:auto;min-height:2;padding:0 1;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -1443,7 +1505,7 @@ class PluginsScreen(Screen):
             default[lang]={"enabled":True,"features":{"completion":True,"definition":True,"hover":True,"diagnostics":True,"rename":True,"code_action":True,"formatting":True},"compile_cmd":"","run_cmd":""}
         default["competitive-companion"]={"enabled":False,"features":{"problem_parsing":False,"test_runner":False},"description":self.app._tr("plugin_desc")}
         default["git"]={"enabled":True,"features":{"status":True,"stage":True,"commit":True},"description":"Git 集成"}
-        default["frogmouth"]={"enabled":False,"features":{"preview":True},"description":"Markdown 预览"}
+        # 已删除 frogmouth 的默认配置
         default["ollama"]={"enabled":True,"features":{"chat":True,"insert":True},"description":"Ollama 对话"}
         if PLUGIN_CONFIG_FILE.exists():
             try:
@@ -1466,7 +1528,7 @@ class PluginsScreen(Screen):
             yield Horizontal(Label(self.app._tr("menu_plugins"),id="plugins-title"),Button("✕",id="plugins-close"),classes="plugin-header")
             yield Horizontal(Label("名称",classes="plugin-name"),Label("服务器/状态",classes="plugin-server"),Label("状态",classes="plugin-status"),Label(self.app._tr("plugin_features"),classes="plugin-features"),Label("操作",classes="plugin-actions"),classes="plugin-header")
             for name,config in self.plugin_config.items():
-                if name in ("competitive-companion","git","frogmouth","ollama"):
+                if name in ("competitive-companion","git","ollama"):
                     status=self.app._tr("plugin_enable") if config.get("enabled",True) else self.app._tr("plugin_disable")
                     desc=config.get("description","")
                     with Container(classes="plugin-row"):
@@ -1497,9 +1559,6 @@ class PluginsScreen(Screen):
                     self.app_ref._start_companion()
                 else:
                     self.app_ref._stop_companion()
-            elif name=="frogmouth":
-                if not self.plugin_config[name]["enabled"]:
-                    self.app_ref.notify("frogmouth 功能已禁用", severity="warning")
             self.dismiss()
             self.app_ref.push_screen(PluginsScreen(self.app_ref))
         elif event.button.id.startswith("detail_"):
@@ -1508,8 +1567,6 @@ class PluginsScreen(Screen):
             settings_format = ""
             if name=="git":
                 settings_format = '{"git": {"enabled": true}}'
-            elif name=="frogmouth":
-                settings_format = '{"frogmouth": {"enabled": true}}'
             elif name=="ollama":
                 settings_format = '{"ollama": {"enabled": true, "model": "gpt-oss:20b-cloud"}}'
             self.app.push_screen(PluginDetailScreen(name, desc, True, settings_format))
@@ -1533,7 +1590,7 @@ class PluginsScreen(Screen):
         if self.app:
             self.app.focus_editor()
 
-class LanguageSettingsScreen(Screen):
+class LanguageSettingsScreen(ModalScreen):
     CSS = """LanguageSettingsScreen{background:rgba(0,0,0,0.6);align:center middle;}#lang-settings-container{background:$surface;padding:2 3;border:round $accent;width:60;height:auto;max-height:80%;overflow-y:auto;}#lang-settings-container>Label{margin:1 0;}#lang-settings-container>Input{margin:0 0 1 0;}"""
     def __init__(self,lang,config,parent_screen):
         super().__init__()
@@ -1549,6 +1606,7 @@ class LanguageSettingsScreen(Screen):
             yield Label(self.app._tr("run_cmd")+":")
             self.run_input=Input(value=self.config.get("run_cmd",""),id="run-cmd")
             yield self.run_input
+            yield Label("支持变量: {FilePath}, {FilePathWithNoExtension}, {FileName}, {FileNameWithNoExtension}, {DirPath}", classes="hint")
             yield Label(" ")
             yield Button("保存",variant="primary",id="save-lang-settings")
             yield Button(self.app._tr("cancel"),id="cancel-lang-settings")
@@ -1569,7 +1627,46 @@ class LanguageSettingsScreen(Screen):
             self.app.focus_editor()
 
 class OllamaPanel(Vertical):
-    DEFAULT_CSS = """OllamaPanel{height:14;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}OllamaPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}OllamaPanel>Horizontal{height:3;margin:0 0 1 0;}OllamaPanel>Horizontal>Input{width:1fr;margin:0 1;}OllamaPanel>Horizontal>Button{margin:0 1;height:3;}"""
+    DEFAULT_CSS = """OllamaPanel{
+        height: 16; 
+        background: $surface; 
+        border: tall $primary; 
+        display: none; 
+        padding: 0 1; 
+        margin: 0;
+        overflow-x: auto;   /* 允许面板整体横向滚动 */
+        overflow-y: auto;
+    }
+    OllamaPanel > TextArea{
+        border:none;
+        background:$surface;
+        height:1fr; 
+        scrollbar-size: 1 1;  /* 确保开启横向和纵向滚动条 */
+        overflow-x: auto;     /* 长文本允许横向滚动 */
+    }
+    OllamaPanel > Horizontal.controls {
+        height: 3; 
+        margin: 0 0 1 0; 
+        align: center middle;
+        overflow-x: auto;     /* 按钮多时允许横向滚动 */
+    }
+    OllamaPanel > Horizontal.controls > Select {
+        width: 30; 
+        margin: 0 1;
+    }
+    OllamaPanel > Horizontal.controls > Button {
+        width: auto; 
+        min-width: 10; 
+        padding: 0 2; 
+        height: 3; 
+        margin: 0 1;
+    }
+    OllamaPanel > Input { 
+        width: 1fr; 
+        margin: 0 1 1 1; 
+        height: 3; 
+    }
+    """
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -1579,19 +1676,34 @@ class OllamaPanel(Vertical):
         self._ollama_url="http://localhost:11434"
         self._ollama_model="gpt-oss:20b-cloud"
         self._is_loading=False
+        self._stop_flag=False
+        
     def on_mount(self):
         self._ollama_url=self.app_ref._settings.get("ollama_url","http://localhost:11434")
         self._ollama_model=self.app_ref._settings.get("ollama_model","gpt-oss:20b-cloud")
-        self.output_area.text="💬 Ollama 对话面板\n输入问题并按 Enter 开始对话"
+        self.output_area.text="💬 Ollama 对话面板\n输入问题并按 Enter 开始对话\n支持选择模型、中途停止、智能插入代码。"
+        models = [self._ollama_model]
+        self.model_select.set_options([(m, m) for m in models])
+        self.model_select.value = self._ollama_model
+
     def compose(self):
         self.output_area=ReadOnlyTextArea(language=None,id="ollama-output")
         yield self.output_area
-        with Horizontal(id="ollama-buttons"):
-            self.input=Input(placeholder=self.app._tr("ollama_input"),id="ollama-input")
-            yield self.input
+        
+        with Horizontal(classes="controls"):
+            yield Label("模型:")
+            self.model_select=Select(options=[(self._ollama_model, self._ollama_model)], allow_blank=False)
+            yield self.model_select
+            self.stop_btn=Button("停止生成", id="ollama-stop", variant="error", disabled=True)
+            yield self.stop_btn
+            yield Button("复制回复", id="ollama-copy", variant="default")
             yield Button("插入代码", id="ollama-insert", variant="primary")
             yield Button("清空对话", id="ollama-clear", variant="default")
             yield Button("关闭", id="ollama-close", variant="default")
+        
+        self.input=Input(placeholder=self.app_ref._tr("ollama_input"), id="ollama-input")
+        yield self.input
+
     def on_input_submitted(self,event):
         msg=event.value.strip()
         if not msg or self._is_loading:
@@ -1604,13 +1716,24 @@ class OllamaPanel(Vertical):
         self.output_area.text+=f"\n🧑 你: {msg}\n"
         self._scroll_to_bottom()
         self.app_ref.run_worker(self._send_ollama(msg))
+
     def on_button_pressed(self,event):
-        if event.button.id=="ollama-insert":
+        if event.button.id=="ollama-stop":
+            self._stop_flag=True
+            self.notify("正在停止生成...", severity="warning")
+        elif event.button.id=="ollama-copy":
+            if hasattr(self.app, "copy_to_clipboard"):
+                self.app.copy_to_clipboard(self.output_area.text)
+                self.notify("回复已复制到剪贴板", severity="information")
+            else:
+                self.notify("当前 Textual 版本不支持直接复制到剪贴板，请手动复制文本", severity="warning")
+        elif event.button.id=="ollama-insert":
             self._insert_code()
         elif event.button.id=="ollama-clear":
             self.clear()
         elif event.button.id=="ollama-close":
             self.app_ref.action_toggle_ollama()
+
     def on_key(self,event):
         if event.key=="up" and self.input.has_focus:
             if self._history_index>0:
@@ -1629,35 +1752,80 @@ class OllamaPanel(Vertical):
                 event.stop()
         elif event.key=="enter" and not self.input.has_focus:
             self.input.focus()
+
     async def _send_ollama(self,msg):
         if self._is_loading:
             return
         self._is_loading=True
+        self._stop_flag=False
+        self.stop_btn.disabled=False
+        
+        self.model_select.disabled=True
+        
         self.output_area.text+="\n🤖 Ollama: "
         self._scroll_to_bottom()
         try:
-            import ollama
-            client = ollama.Client(host=self._ollama_url)
-            stream = client.chat(
-                model=self._ollama_model,
-                messages=self._conversation + [{"role": "user", "content": msg}],
-                stream=True
+            import urllib.request
+            import json
+            
+            if self.model_select.value:
+                self._ollama_model = self.model_select.value
+            
+            payload = json.dumps({
+                "model": self._ollama_model,
+                "messages": self._conversation + [{"role": "user", "content": msg}],
+                "stream": True
+            }).encode('utf-8')
+            
+            req = urllib.request.Request(
+                self._ollama_url.rstrip('/') + "/api/chat",
+                data=payload,
+                headers={'Content-Type': 'application/json'}
             )
+
             full = ""
-            for chunk in stream:
-                if "message" in chunk and "content" in chunk["message"]:
-                    piece = chunk["message"]["content"]
-                    full += piece
-                    self.output_area.text += piece
-                    self._scroll_to_bottom()
-            self.output_area.text += "\n"
-            self._conversation.append({"role": "user", "content": msg})
-            self._conversation.append({"role": "assistant", "content": full})
+            
+            def _update_ui(piece):
+                self.output_area.text += piece
+                self._scroll_to_bottom()
+
+            def _run_request():
+                nonlocal full
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    for line in resp:
+                        if self._stop_flag:
+                            break
+                        line = line.decode('utf-8').strip()
+                        if not line:
+                            continue
+                        try:
+                            chunk = json.loads(line)
+                            if "message" in chunk and "content" in chunk["message"]:
+                                piece = chunk["message"]["content"]
+                                full += piece
+                                self.call_after_refresh(_update_ui, piece)
+                        except json.JSONDecodeError:
+                            continue
+
+            await asyncio.to_thread(_run_request)
+
+            if self._stop_flag:
+                self.output_area.text += "\n[已停止生成]\n"
+            else:
+                self.output_area.text += "\n"
+                self._conversation.append({"role": "user", "content": msg})
+                self._conversation.append({"role": "assistant", "content": full})
+                
         except Exception as e:
             self.output_area.text += f"\n[错误] {e}\n"
+            if "Connection refused" in str(e):
+                self.output_area.text += "（请确认 Ollama 服务已启动，且 URL 配置正确）\n"
         finally:
             self._is_loading = False
+            self.stop_btn.disabled=True
+            self.model_select.disabled=False
             self._scroll_to_bottom()
+
     def _insert_code(self):
         text=self.output_area.text
         blocks=re.findall(r'```(\w*)\n(.*?)```',text,re.DOTALL)
@@ -1667,21 +1835,26 @@ class OllamaPanel(Vertical):
                 editor=self.app_ref.get_current_text_area()
                 if editor:
                     row,col=editor.cursor_location
-                    indent_type=self.app_ref._settings.get("indent_type","spaces")
-                    if indent_type=="spaces":
-                        lines=code.splitlines()
-                        indented="\n".join("    "+line if line.strip() else line for line in lines)
-                    else:
-                        indented=code
-                    editor.replace(indented,(row,col),(row,col))
-                    self.app_ref.notify("已插入代码",severity="information")
+                    lines=editor.text.splitlines()
+                    indent_text = ""
+                    if row < len(lines):
+                        line = lines[row]
+                        indent_text = line[:len(line) - len(line.lstrip())]
+                    
+                    lines = code.splitlines()
+                    indented_code = "\n".join(indent_text + l if l.strip() else "" for l in lines)
+                    
+                    editor.replace(indented_code, (row, col), (row, col))
+                    self.app_ref.notify("已自动识别缩进并插入代码", severity="information")
                     return
         editor=self.app_ref.get_current_text_area()
         if editor:
-            editor.replace(text,editor.cursor_location,editor.cursor_location)
+            editor.replace(text, editor.cursor_location, editor.cursor_location)
+
     def clear(self):
-        self.output_area.text="💬 Ollama 对话面板\n输入问题并按 Enter 开始对话"
+        self.output_area.text="💬 Ollama 对话面板\n输入问题并按 Enter 开始对话\n支持选择模型、中途停止、智能插入代码。"
         self._conversation=[]
+
     def _scroll_to_bottom(self):
         lines=len(self.output_area.text.splitlines())
         if lines>0:
@@ -1718,6 +1891,7 @@ class OneEditor(App):
         super().__init__()
         self._language="zh"
         self._settings=self._load_settings()
+        self._initial_files = []
     BINDINGS = [
         Binding("ctrl+n","new_file","新建",show=False),
         Binding("ctrl+o","open_file","打开",show=False),
@@ -1777,29 +1951,68 @@ class OneEditor(App):
     .tab-close{padding:0 1;margin:0 1 0 0;background:transparent;color:$text-muted;border:none;height:2;min-width:2;display:block;}
     .tab-close:hover{background:$error;color:$text;}
     #content-container{height:1fr;}
-    TextArea{border:none;background:$surface;}
+    TextArea{border:none;background:$surface;padding:1 2;scrollbar-size:1 1; overflow-x: auto;}
     #status-bar{background:$primary;color:$text;padding:0 1;height:1;}
     #find-replace-bar{height:3;background:$surface;padding:0 1;display:none;}
     #find-replace-bar>Input{width:1fr;margin:0 1;}
     #find-replace-bar>Button{margin:0 1;height:3;}
     .find-btn{padding:0 1;background:$surface;color:$text;border:none;height:1;}
     .find-btn:hover{background:$panel;}
-    #file-browser{height:20;background:$surface;border:tall $primary;display:none;padding:0 1;}
-    #browser-layout{height:1fr;}
-    #browser-tree{width:30;border-right:tall $primary;padding:0 1;overflow-y:auto;}
-    #browser-input-area{width:1fr;padding:0 1;}
-    #browser-input{width:1fr;margin:1 0;}
-    #browser-buttons{height:3;padding:1 0;}
-    .browser-btn{margin:0 1;}
+    #file-browser{
+        height: auto;
+        max-height: 40;
+        background: $surface;
+        border: tall $primary;
+        display: none;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+    #browser-layout{
+        height: auto;
+        min-height: 20;
+        max-height: 30;
+        overflow-x: auto;
+        overflow-y: auto;
+    }
+    #browser-tree{
+        width: 30;
+        border-right: tall $primary;
+        padding: 0 1;
+        overflow-y: auto;
+        height: auto;
+    }
+    #browser-input-area{
+        width: 1fr;
+        padding: 0 1;
+        height: auto;
+    }
+    #browser-input{
+        width: 1fr;
+        margin: 1 0;
+    }
+    #browser-buttons{
+        height: auto;
+        padding: 0 1;
+        align: center middle;
+        margin-top: 1;
+    }
+    .browser-btn{
+        margin: 0 1;
+        width: auto;
+        min-width: 12;
+        height: 3;
+        padding: 0 2;
+        content-align: center middle;
+    }
     #completion-menu{layer:autocomplete;display:none;height:auto;max-height:10;width:auto;min-width:30;max-width:60;border:round $accent;background:$surface;padding:0;}
     .tree-resize-handle{width:3;background:$surface;border-right:tall $primary;}
     #tree-container {
         height: 1fr;
-        width: 30;           /* 默认宽度改回 30 */
+        width: 30;
         min-width: 20;
         max-width: 60;
         background: $surface;
-        overflow-x: auto;    /* 必须保留横向滚动！否则30太窄会看不到右侧状态 */
+        overflow-x: auto;
         overflow-y: auto;
     }
     .tree-node.drag-target{background:$accent 50%;}
@@ -1817,9 +2030,7 @@ class OneEditor(App):
     #browser-buttons Button {height:3;min-width:8;margin:0 1;}
     """
 
-    # ========== 新增：获取诊断方法 ==========
     def _get_diagnostics_for_path(self, path):
-        """根据文件路径获取 LSP 错误/警告数量（兼容大小写）"""
         try:
             abs_path = str(Path(path).resolve())
             diags = self._diagnostics_cache.get(abs_path, [])
@@ -1829,12 +2040,9 @@ class OneEditor(App):
         except:
             return 0, 0
 
-    # ========== 新增：异步刷新文件树 ==========
     def _refresh_tree_async(self):
-        """强制刷新文件树（正确方法）"""
         try:
             self.file_tree.refresh_status()
-            # 使用 run_worker 执行异步 reload，确保重新生成节点
             self.run_worker(self.file_tree.reload())
         except Exception:
             pass
@@ -1934,12 +2142,25 @@ class OneEditor(App):
             else:
                 self.show_tab(next(iter(self._tab_data.keys())))
         self.file_tree.display=self._show_file_tree
-        self.file_tree.set_diagnostics_provider(self._get_diagnostics_for_path)  # 新增：绑定诊断提供者
+        self.file_tree.set_diagnostics_provider(self._get_diagnostics_for_path)
         self.file_tree.focus()
         self._apply_tree_width()
         if self._autosave_interval>0:
             self.set_timer(self._autosave_interval,self._autosave)
         self.set_timer(2,self._check_external_changes)
+        
+        # 处理命令行传入的文件
+        for file_path in self._initial_files:
+            p = Path(file_path)
+            if p.exists() and p.is_file():
+                self._open_file_by_path(p)
+            elif p.exists() and p.is_dir():
+                self.file_tree.path = p
+                self.notify(f"已切换目录: {p}", severity="information")
+                self.refresh()
+            else:
+                self.notify(f"未找到文件: {file_path}", severity="warning")
+        
         self.notify(f"欢迎使用 One-Editor {self._tr('about_version')}", severity="information", timeout=3)
 
     def _get_welcome_text(self):
@@ -2031,7 +2252,6 @@ class OneEditor(App):
             self.set_timer(self._autosave_interval,self._autosave)
 
     def _load_tree_width(self):
-        # 恢复读取配置文件，默认宽度 30
         try:
             if CONFIG_FILE.exists():
                 cfg = json.load(open(CONFIG_FILE, "r", encoding="utf-8"))
@@ -2305,7 +2525,7 @@ class OneEditor(App):
         self._find_matches=[]
         self._find_index=-1
         self._hide_find_replace()
-        self.call_after_refresh(self._refresh_tree_async)  # 触发文件树刷新
+        self.call_after_refresh(self._refresh_tree_async)
         self._save_state()
         container=data.get("container")
         if container and container.parent:
@@ -3335,7 +3555,6 @@ class OneEditor(App):
 
     def _on_diagnostics(self, uri, diagnostics):
         self._diagnostics_cache[uri] = diagnostics
-        # 同时存入绝对路径，解决大小写匹配问题
         try:
             abs_path = str(Path(uri_to_path(uri)).resolve())
             self._diagnostics_cache[abs_path] = diagnostics
@@ -3350,7 +3569,6 @@ class OneEditor(App):
             ed = self.get_current_text_area()
             if ed and hasattr(ed, 'apply_diagnostics'):
                 ed.apply_diagnostics(diagnostics)
-            # 强制刷新文件树以显示错误和警告
             self.call_after_refresh(self._refresh_tree_async)
 
     def action_show_symbols(self):
@@ -3495,46 +3713,84 @@ class OneEditor(App):
         if not actions:
             self.notify("没有可用的代码操作",severity="information")
             return
-        items=[{"label":a.get("title","操作"),"action":a} for a in actions]
+        items=[]
+        for a in actions:
+            if isinstance(a, dict):
+                title = a.get("title", "操作")
+                items.append({"label": title, "action": a})
+            elif isinstance(a, str):
+                items.append({"label": a, "action": a})
+            else:
+                items.append({"label": str(a), "action": a})
         def cb(a):
             self._apply_code_action(a)
         self.push_screen(OptionListMenu(self._tr("code_action"),items,cb))
 
-    def _apply_code_action(self,action):
+    def _apply_code_action(self, action):
         try:
-            if "edit" in action:
-                edits=action["edit"]
-                ed=self.get_current_text_area()
-                if ed and isinstance(edits, dict):
-                    if "changes" in edits and isinstance(edits["changes"], dict):
-                        for uri, edit_list in edits["changes"].items():
-                            if uri == self._current_uri and isinstance(edit_list, list):
-                                for edit in reversed(edit_list):
-                                    if isinstance(edit, dict):
-                                        r = edit.get("range", {})
-                                        s = r.get("start", {}) if isinstance(r, dict) else {}
-                                        e = r.get("end", {}) if isinstance(r, dict) else {}
-                                        ed.replace(
-                                            edit.get("newText", ""),
-                                            (s.get("line", 0), s.get("character", 0)),
-                                            (e.get("line", 0), e.get("character", 0))
-                                        )
-                    elif "documentChanges" in edits and isinstance(edits["documentChanges"], list):
-                        for change in edits["documentChanges"]:
-                            if isinstance(change, dict) and change.get("textDocument", {}).get("uri") == self._current_uri:
-                                for edit in reversed(change.get("edits", [])):
-                                    if isinstance(edit, dict):
-                                        r = edit.get("range", {})
-                                        s = r.get("start", {}) if isinstance(r, dict) else {}
-                                        e = r.get("end", {}) if isinstance(r, dict) else {}
-                                        ed.replace(
-                                            edit.get("newText", ""),
-                                            (s.get("line", 0), s.get("character", 0)),
-                                            (e.get("line", 0), e.get("character", 0))
-                                        )
+            if isinstance(action, str):
+                self.notify(f"收到纯命令操作: {action}（未包含具体修改内容，已安全跳过）", severity="warning")
+                return
+            if not isinstance(action, dict):
+                self.notify("无法识别的代码操作类型", severity="warning")
+                return
+
+            ed = self.get_current_text_area()
+            if not ed:
+                return
+
+            # 递归提取修改内容
+            extracted_edits = []
+            def extract_edits_from_obj(obj):
+                if isinstance(obj, dict):
+                    if "range" in obj and "newText" in obj:
+                        extracted_edits.append(obj)
+                    for key in ["edits", "edit", "changes", "documentChanges", "workspaceEdit", "arguments", "value"]:
+                        if key in obj:
+                            extract_edits_from_obj(obj[key])
+                elif isinstance(obj, list):
+                    for item in obj:
+                        extract_edits_from_obj(item)
+
+            extract_edits_from_obj(action)
+
+            if extracted_edits:
+                for edit in reversed(extracted_edits):
+                    r = edit.get("range", {})
+                    s = r.get("start", {}) if isinstance(r, dict) else {}
+                    e = r.get("end", {}) if isinstance(r, dict) else {}
+                    ed.replace(
+                        edit.get("newText", ""),
+                        (s.get("line", 0), s.get("character", 0)),
+                        (e.get("line", 0), e.get("character", 0))
+                    )
+                self.notify("已成功提取并应用快速修复内容", severity="information")
+                return
+
             if "command" in action:
                 cmd = action["command"]
-                self.notify(f"执行命令: {cmd.get('title', '未知')}", severity="information")
+                arguments = action.get("arguments", [])
+                if self.lsp.running:
+                    self.notify(f"正在请求服务器执行修复命令: {cmd}...", severity="information")
+                    async def _execute_lsp_cmd():
+                        try:
+                            result = await self.lsp.execute_command(cmd, arguments)
+                            self.notify("修复命令已执行完毕", severity="information")
+                            data = self._tab_data.get(self._active_tab_id)
+                            if data and data.get("filepath") and Path(data["filepath"]).exists():
+                                content = safe_read(data["filepath"], encoding=data.get("encoding", "utf-8"))
+                                if content is not None:
+                                    data["textarea"].text = content
+                                    self._modified[self._active_tab_id] = False
+                                    self.update_status_bar()
+                                    self.notify("文件内容已同步", severity="information")
+                        except Exception as e:
+                            self.notify(f"LSP 命令处理异常: {e}", severity="error")
+                    self.run_worker(_execute_lsp_cmd())
+                    return
+
+                cmd_title = str(cmd) if not isinstance(cmd, dict) else cmd.get('title', '未知')
+                self.notify(f"执行命令: {cmd_title}", severity="information")
         except Exception as e:
             self.notify(f"应用代码操作失败: {e}", severity="error")
             traceback.print_exc()
@@ -3567,6 +3823,16 @@ class OneEditor(App):
         ed=self.get_current_text_area()
         if ed:
             ed.select_all()
+
+    def _format_command(self, cmd: str, filepath: str) -> str:
+        """将插件设置中的占位符替换为真实路径"""
+        fp = Path(filepath)
+        return (cmd
+                .replace("{FilePath}", str(fp))
+                .replace("{FilePathWithNoExtension}", str(fp.with_suffix("")))
+                .replace("{FileName}", fp.name)
+                .replace("{FileNameWithNoExtension}", fp.stem)
+                .replace("{DirPath}", str(fp.parent)))
 
     def _get_run_command(self,filepath):
         ext=Path(filepath).suffix.lower()
@@ -3618,9 +3884,27 @@ class OneEditor(App):
             self.notify(self._tr("no_file"),severity="warning")
             return
         self.action_save_file(tid)
+        
+        cfg = self._load_plugin_config()
+        lang = detect_language(fp)
+        if lang and lang in cfg and cfg[lang].get("run_cmd"):
+            formatted_cmd = self._format_command(cfg[lang]["run_cmd"], fp)
+            self.output_panel.display = True
+            self.output_panel.set_command(formatted_cmd)
+            self.output_panel.clear()
+            self.run_worker(self._run_process(formatted_cmd, fp, shell=True), exclusive=True, group="run")
+            return
+
         ext = Path(fp).suffix.lower()
         if ext in ('.md', '.markdown'):
             self._preview_markdown(fp)
+            return
+        if ext in ('.html', '.htm'):
+            try:
+                previewer.preview_html(fp)
+                self.notify("正在系统浏览器中打开 HTML...", severity="information")
+            except Exception as e:
+                self.notify(f"HTML 预览失败: {e}", severity="error")
             return
         cmd=self._get_run_command(fp)
         if not cmd:
@@ -3628,24 +3912,16 @@ class OneEditor(App):
             return
         shell=any(x in cmd for x in ['&&','||','|','>','<']) if isinstance(cmd,list) else False
         self.output_panel.display=True
+        self.output_panel.set_command(cmd)
         self.output_panel.clear()
         self.run_worker(self._run_process(cmd,fp,shell=shell), exclusive=True, group="run")
 
     def _preview_markdown(self, filepath):
-        if shutil.which("frogmouth"):
-            import subprocess, time
-            try:
-                proc = subprocess.Popen(["frogmouth", filepath], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                time.sleep(0.5)
-                if proc.poll() is not None:
-                    stderr = proc.stderr.read().decode('utf-8', errors='ignore') if proc.stderr else ""
-                    self.notify(f"frogmouth 启动失败: {stderr[:200]}", severity="error")
-                else:
-                    self.notify("使用 frogmouth 预览 Markdown", severity="information")
-            except Exception as e:
-                self.notify(f"预览失败: {e}", severity="error")
-        else:
-            self.notify("未安装 frogmouth，无法预览，请先安装: pip install frogmouth", severity="warning")
+        try:
+            previewer.preview_markdown(filepath)
+            self.notify("正在系统浏览器中预览 Markdown...", severity="information")
+        except Exception as e:
+            self.notify(f"Markdown 预览失败: {e}", severity="error")
 
     def action_build(self):
         tid=self.get_current_tab_id()
@@ -3659,6 +3935,17 @@ class OneEditor(App):
         if not fp:
             self.notify(self._tr("no_file"),severity="warning")
             return
+        
+        cfg = self._load_plugin_config()
+        lang = detect_language(fp)
+        if lang and lang in cfg and cfg[lang].get("compile_cmd"):
+            formatted_cmd = self._format_command(cfg[lang]["compile_cmd"], fp)
+            self.output_panel.display = True
+            self.output_panel.set_command(formatted_cmd)
+            self.output_panel.clear()
+            self.run_worker(self._run_process(formatted_cmd, shell=True), exclusive=True, group="build")
+            return
+
         root=self._find_project_root(Path(fp).parent)
         if not root:
             self.notify(self._tr("no_project"),severity="warning")
@@ -3683,6 +3970,7 @@ class OneEditor(App):
             self.notify(self._tr("no_build_system"),severity="warning")
             return
         self.output_panel.display=True
+        self.output_panel.set_command(cmds)
         self.output_panel.clear()
         self.run_worker(self._run_process(cmds,cwd=cwd,shell=True), exclusive=True, group="build")
 
@@ -3888,4 +4176,8 @@ class OneEditor(App):
         return str(Path.cwd())
 
 if __name__=="__main__":
-    OneEditor().run()
+    import sys
+    files = sys.argv[1:]
+    app = OneEditor()
+    app._initial_files = files
+    app.run()

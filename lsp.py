@@ -288,7 +288,25 @@ class LspClient:
             return []
         if not result:
             return []
+        
+        # 保持原样返回，让 one-editor.py 去处理它
         return result
+
+    async def execute_command(self, command: str, arguments: list):
+        """标准方法：请求 LSP 服务器执行命令（例如 clangd.applyFix）"""
+        if not self._uri or not self.running:
+            return False
+        try:
+            result = await asyncio.wait_for(
+                self._request("workspace/executeCommand", {
+                    "command": command,
+                    "arguments": arguments
+                }),
+                timeout=5,
+            )
+            return result
+        except Exception:
+            return None
 
     async def rename(self, line: int, col: int, new_name: str) -> Optional[Dict[str, Any]]:
         if not self._uri or not self.running:
