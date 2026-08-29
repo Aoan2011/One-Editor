@@ -273,7 +273,7 @@ class InputBar(Horizontal):
 
 # --- 新增 GoToLineBar 类 ---
 class GoToLineBar(Horizontal):
-    DEFAULT_CSS = """GoToLineBar{height:3;background:$surface;padding:0 1;display:none;} GoToLineBar>Input{width:1fr;margin:0 1;} GoToLineBar>Button{margin:0 1;height:1;}"""
+    DEFAULT_CSS = """GoToLineBar{height:3;background:$surface;padding:0 1;display:none;} GoToLineBar>Input{width:1fr;margin:0 1;} GoToLineBar>Button{margin:0 1;height:3;min-width:8;}"""
     def __init__(self, app):
         super().__init__()
         self.app_ref = app
@@ -345,7 +345,7 @@ class OutputPanel(Vertical):
             self.clear()
 
 class TerminalPanel(Vertical):
-    DEFAULT_CSS = """TerminalPanel{height:12;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}TerminalPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}TerminalPanel>Horizontal{height:3;margin:0 0 1 0;}TerminalPanel>Horizontal>Input{width:1fr;margin:0 1;}TerminalPanel>Horizontal>Button{margin:0 1;height:1;}"""
+    DEFAULT_CSS = """TerminalPanel{height:12;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}TerminalPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}TerminalPanel>Horizontal{height:3;margin:0 0 1 0;}TerminalPanel>Horizontal>Input{width:1fr;margin:0 1;}TerminalPanel>Horizontal>Button{margin:0 1;height:3;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -674,6 +674,73 @@ class GlobalSearchScreen(Screen):
     def on_key(self, event):
         if event.key == "escape":
             self.dismiss()
+
+# ========== 新版 CommandPalette（模糊搜索） ==========
+class CommandPalette(Screen):
+    CSS = """
+    CommandPalette { background: rgba(0,0,0,0.6); align: center middle; }
+    #cmd-palette {
+        background: $surface;
+        padding: 1 2;
+        border: round $accent;
+        width: 60;
+        height: auto;
+        max-height: 60%;
+        overflow-y: auto;
+    }
+    #cmd-input { width: 1fr; margin-bottom: 1; }
+    #cmd-list { height: 1fr; }
+    """
+    def __init__(self, commands: dict, callback):
+        super().__init__()
+        self.commands = commands  # dict: action -> description
+        self.callback = callback
+        self._filtered = []
+        self._input = None
+        self._list = None
+
+    def compose(self):
+        with Container(id="cmd-palette"):
+            self._input = Input(placeholder="输入命令...", id="cmd-input")
+            yield self._input
+            self._list = OptionList(id="cmd-list")
+            yield self._list
+            yield Button(self.app._tr("cancel"), id="cmd-cancel")
+
+    def on_mount(self):
+        self._update_list("")
+
+    def on_input_changed(self, event):
+        self._update_list(event.value)
+
+    def on_input_submitted(self, event):
+        if self._list.highlighted is not None:
+            self._select(self._list.highlighted)
+
+    def _update_list(self, query: str):
+        self._list.clear_options()
+        q = query.lower()
+        self._filtered = []
+        for action, desc in self.commands.items():
+            if q in action.lower() or q in desc.lower():
+                self._filtered.append((action, desc))
+        for idx, (action, desc) in enumerate(self._filtered):
+            self._list.add_option(Option(f"{desc}   ({action})", id=f"cmd_{idx}"))
+
+    def on_option_list_option_selected(self, event):
+        idx = int(event.option.id.split("_")[1])
+        self._select(idx)
+
+    def _select(self, idx):
+        if 0 <= idx < len(self._filtered):
+            action, desc = self._filtered[idx]
+            self.dismiss()
+            self.callback(action)
+
+    def on_key(self, event):
+        if event.key == "escape":
+            self.dismiss()
+
 # ========== 其他现有类（保持原样） ==========
 class AxiomEditor(TextArea):
     def __init__(self, *args, show_line_numbers=True, language=None, **kwargs):
@@ -1136,18 +1203,16 @@ class FileTreeContextMenu(OptionListMenu):
             pass
         def cb(action):
             app=self.app
-            def do_action():
-                try:
-                    app._context_path=self.path
-                    if action is None:
-                        return
-                    if action.startswith("git_"):
-                        app._git_action(action)
-                    else:
-                        app._filetree_menu_callback(action)
-                except Exception as e:
-                    app.notify(f"文件树操作失败: {e}", severity="error", timeout=5)
-            app.call_after_refresh(do_action)
+            try:
+                app._context_path=self.path
+                if action is None:
+                    return
+                if action.startswith("git_"):
+                    app._git_action(action)
+                else:
+                    app._filetree_menu_callback(action)
+            except Exception as e:
+                app.notify(f"文件树操作失败: {e}", severity="error", timeout=5)
         super().__init__("文件树",items,cb)
 
 class TopMenuBar(Horizontal):
@@ -1353,7 +1418,7 @@ class SettingsScreen(Screen):
 class PluginDetailScreen(Screen):
     def __init__(self, name, desc, is_builtin=True, settings_format=""):
         super().__init__()
-        self.plugin_name = name  # 避免与 Screen 内置的 name 属性冲突
+        self.plugin_name = name
         self.desc = desc
         self.is_builtin = is_builtin
         self.settings_format = settings_format
@@ -1361,14 +1426,13 @@ class PluginDetailScreen(Screen):
         yield Label(f"插件名称: {self.plugin_name}")
         yield Label(f"类型: {'built-in' if self.is_builtin else 'external'}")
         yield Label(f"介绍: {self.desc}")
-        yield Label(f"作者: @Aoan2011")           # 新增作者信息
         yield Label(f"设置格式: {self.settings_format}")
         yield Button("关闭", id="close")
     def on_button_pressed(self, event):
         self.dismiss()
 
 class PluginsScreen(Screen):
-    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:2 3;border:round $accent;width:90;height:auto;max-height:80%;overflow-x:auto;overflow-y:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:3;padding:0 1;margin:0 0 1 0;background:$surface;border:none;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-features{width:1fr;}.toggle-btn{width:12;border:none;background:$primary;color:$text;}.toggle-btn.off{background:$surface;color:$text-muted;}.settings-btn{width:8;border:none;background:$accent;color:$text;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}.feature-row{height:2;padding:0 1;}"""
+    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:2 3;border:round $accent;width:80;height:auto;max-height:80%;overflow-y:auto;overflow-x:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:3;padding:0 1;margin:0 0 1 0;background:$surface;border:none;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-features{width:1fr;}.toggle-btn{width:12;border:none;background:$primary;color:$text;}.toggle-btn.off{background:$surface;color:$text-muted;}.settings-btn{width:8;border:none;background:$accent;color:$text;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}.feature-row{height:2;padding:0 1;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -1378,10 +1442,9 @@ class PluginsScreen(Screen):
         for lang in LANG_SERVERS.keys():
             default[lang]={"enabled":True,"features":{"completion":True,"definition":True,"hover":True,"diagnostics":True,"rename":True,"code_action":True,"formatting":True},"compile_cmd":"","run_cmd":""}
         default["competitive-companion"]={"enabled":False,"features":{"problem_parsing":False,"test_runner":False},"description":self.app._tr("plugin_desc")}
-        # 新增 git/frogmouth/ollama 插件
-        default["git"]={"enabled":True,"features":{"status":True,"stage":True,"commit":True},"description":"Git 集成：提供文件状态、暂存、提交等操作"}
-        default["frogmouth"]={"enabled":False,"features":{"preview":True},"description":"Markdown 预览：使用 frogmouth 打开 MD 文件"}
-        default["ollama"]={"enabled":True,"features":{"chat":True,"insert":True},"description":"Ollama 对话：支持流式对话和代码插入"}
+        default["git"]={"enabled":True,"features":{"status":True,"stage":True,"commit":True},"description":"Git 集成"}
+        default["frogmouth"]={"enabled":False,"features":{"preview":True},"description":"Markdown 预览"}
+        default["ollama"]={"enabled":True,"features":{"chat":True,"insert":True},"description":"Ollama 对话"}
         if PLUGIN_CONFIG_FILE.exists():
             try:
                 cfg=json.load(open(PLUGIN_CONFIG_FILE,"r",encoding="utf-8"))
@@ -1506,7 +1569,7 @@ class LanguageSettingsScreen(Screen):
             self.app.focus_editor()
 
 class OllamaPanel(Vertical):
-    DEFAULT_CSS = """OllamaPanel{height:14;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}OllamaPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}OllamaPanel>Horizontal{height:3;margin:0 0 1 0;}OllamaPanel>Horizontal>Input{width:1fr;margin:0 1;}OllamaPanel>Horizontal>Button{margin:0 1;height:1;}"""
+    DEFAULT_CSS = """OllamaPanel{height:14;background:$surface;border:tall $primary;display:none;padding:0 1;margin:0;}OllamaPanel>TextArea{border:none;background:$surface;height:1fr;scrollbar-size:1 1;}OllamaPanel>Horizontal{height:3;margin:0 0 1 0;}OllamaPanel>Horizontal>Input{width:1fr;margin:0 1;}OllamaPanel>Horizontal>Button{margin:0 1;height:3;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -1695,7 +1758,7 @@ class OneEditor(App):
     ]
     CSS = """
     #main-layout{layout:horizontal;}
-    #sidebar{width:30;background:$surface;border-right:tall $primary;padding:0 1;display:block;}
+    #sidebar{width:50;background:$surface;border-right:tall $primary;padding:0 1;display:block;}
     #editor-area{width:1fr;layers:default autocomplete overlay;}
     #menu-bar{height:1;background:$surface;padding:0 1;layout:horizontal;}
     .menu-btn{padding:0 2;background:$surface;color:$text;border:none;height:1;}
@@ -1730,7 +1793,15 @@ class OneEditor(App):
     .browser-btn{margin:0 1;}
     #completion-menu{layer:autocomplete;display:none;height:auto;max-height:10;width:auto;min-width:30;max-width:60;border:round $accent;background:$surface;padding:0;}
     .tree-resize-handle{width:3;background:$surface;border-right:tall $primary;}
-    #tree-container{height:1fr;width:30;background:$surface;}
+    #tree-container {
+        height: 1fr;
+        width: 30;           /* 默认宽度改回 30 */
+        min-width: 20;
+        max-width: 60;
+        background: $surface;
+        overflow-x: auto;    /* 必须保留横向滚动！否则30太窄会看不到右侧状态 */
+        overflow-y: auto;
+    }
     .tree-node.drag-target{background:$accent 50%;}
     .welcome-placeholder{color:$text-muted;text-align:center;padding:4;}
     #goto-bar {height:3;background:$surface;padding:0 1;display:none;}
@@ -1745,16 +1816,29 @@ class OneEditor(App):
     }
     #browser-buttons Button {height:3;min-width:8;margin:0 1;}
     """
+
+    # ========== 新增：获取诊断方法 ==========
     def _get_diagnostics_for_path(self, path):
-        """根据文件路径获取 LSP 错误/警告数量"""
+        """根据文件路径获取 LSP 错误/警告数量（兼容大小写）"""
         try:
-            uri = path_to_uri(str(Path(path).resolve()))
-            diags = self._diagnostics_cache.get(uri, [])
+            abs_path = str(Path(path).resolve())
+            diags = self._diagnostics_cache.get(abs_path, [])
             errors = sum(1 for d in diags if d.get("severity", 1) <= 1)
             warnings = sum(1 for d in diags if d.get("severity", 1) == 2)
             return errors, warnings
         except:
             return 0, 0
+
+    # ========== 新增：异步刷新文件树 ==========
+    def _refresh_tree_async(self):
+        """强制刷新文件树（正确方法）"""
+        try:
+            self.file_tree.refresh_status()
+            # 使用 run_worker 执行异步 reload，确保重新生成节点
+            self.run_worker(self.file_tree.reload())
+        except Exception:
+            pass
+
     def compose(self):
         yield Header()
         yield TopMenuBar(id="menu-bar")
@@ -1823,7 +1907,7 @@ class OneEditor(App):
         self._diagnostics_cache={}
         self._current_uri=None
         self._file_mtime_cache={}
-        self._tree_width=30
+        self._tree_width=40
         self._load_tree_width()
         self._is_resizing=False
         self._file_undo_stack=[]
@@ -1850,7 +1934,7 @@ class OneEditor(App):
             else:
                 self.show_tab(next(iter(self._tab_data.keys())))
         self.file_tree.display=self._show_file_tree
-        self.file_tree.set_diagnostics_provider(self._get_diagnostics_for_path)  # 新增
+        self.file_tree.set_diagnostics_provider(self._get_diagnostics_for_path)  # 新增：绑定诊断提供者
         self.file_tree.focus()
         self._apply_tree_width()
         if self._autosave_interval>0:
@@ -1947,14 +2031,16 @@ class OneEditor(App):
             self.set_timer(self._autosave_interval,self._autosave)
 
     def _load_tree_width(self):
-        if CONFIG_FILE.exists():
-            try:
-                cfg=json.load(open(CONFIG_FILE,"r",encoding="utf-8"))
+        # 恢复读取配置文件，默认宽度 30
+        try:
+            if CONFIG_FILE.exists():
+                cfg = json.load(open(CONFIG_FILE, "r", encoding="utf-8"))
                 if "tree_width" in cfg:
-                    self._tree_width=cfg["tree_width"]
-            except:
-                pass
-
+                    self._tree_width = max(30, min(60, cfg["tree_width"]))
+                    return
+        except:
+            pass
+        self._tree_width = 30
     def _save_tree_width(self):
         try:
             with open(CONFIG_FILE,"r+",encoding="utf-8") as f:
@@ -2019,7 +2105,6 @@ class OneEditor(App):
                 is_file=path.is_file()
                 self.push_screen(FileTreeContextMenu(path,is_file))
                 return
-        # 重新启用拖拽（左键）
         if event.button==1 and self.file_tree.region.contains(event.x,event.y):
             node=self.file_tree.cursor_node
             if node is not None:
@@ -2049,9 +2134,7 @@ class OneEditor(App):
         if getattr(self,"_drag_node",None) and not self._is_dragging:
             if abs(event.x - self._drag_start_x) > 5 or abs(event.y - self._drag_start_y) > 5:
                 self._is_dragging=True
-                # 可选：高亮目标节点
         if self._is_dragging and self._drag_node:
-            # 根据坐标查找目标节点（简化：使用 cursor_node 近似）
             pass
 
     def on_mouse_up(self,event):
@@ -2222,6 +2305,7 @@ class OneEditor(App):
         self._find_matches=[]
         self._find_index=-1
         self._hide_find_replace()
+        self.call_after_refresh(self._refresh_tree_async)  # 触发文件树刷新
         self._save_state()
         container=data.get("container")
         if container and container.parent:
@@ -2361,7 +2445,6 @@ class OneEditor(App):
             traceback.print_exc()
 
     def show_input_bar(self, prompt: str, callback):
-        """显示内嵌输入栏"""
         self.input_bar.show(prompt, callback)
 
     def update_status_bar(self):
@@ -2407,7 +2490,6 @@ class OneEditor(App):
         self.status_bar.update(f"{title} {mod_mark}  [{lang}] {enc} {le}{size}  {self._tr('status_line')} {row+1}/{total}  {self._tr('status_col')} {col+1}{sel_info}  |  {lsp_status}{extra}")
 
     def _get_lsp_server_name(self, lang: str) -> str:
-        """根据语言返回语言服务器名称（可执行文件名）"""
         if lang is None:
             return ""
         cmd = LANG_SERVERS.get(lang)
@@ -2593,7 +2675,6 @@ class OneEditor(App):
         self._find_visible=False
         self.focus_editor()
 
-    # --- 转到行相关 ---
     def action_goto_line(self):
         ta = self.get_current_text_area()
         if not ta or getattr(ta, 'read_only', False):
@@ -2853,7 +2934,7 @@ class OneEditor(App):
                 if undo:
                     op.path.rename(op.old_path)
                 else:
-                    op.path.rename(op.old_path)  # 简化处理
+                    op.path.rename(op.old_path)
             elif op.op_type=='move':
                 if undo:
                     shutil.move(str(op.path),str(op.old_path))
@@ -3072,7 +3153,7 @@ class OneEditor(App):
     def _refresh_file_tree(self):
         try:
             self.file_tree.refresh_status()
-            self.call_after_refresh(self.file_tree.reload)
+            self.call_after_refresh(self._refresh_tree_async)
         except:
             self.file_tree.path=self.file_tree.path
         self.refresh()
@@ -3252,16 +3333,25 @@ class OneEditor(App):
             event.prevent_default()
             event.stop()
 
-    def _on_diagnostics(self,uri,diagnostics):
-        self._diagnostics_cache[uri]=diagnostics
-        if uri==self._current_uri:
+    def _on_diagnostics(self, uri, diagnostics):
+        self._diagnostics_cache[uri] = diagnostics
+        # 同时存入绝对路径，解决大小写匹配问题
+        try:
+            abs_path = str(Path(uri_to_path(uri)).resolve())
+            self._diagnostics_cache[abs_path] = diagnostics
+        except:
+            pass
+
+        if uri == self._current_uri:
             self.update_status_bar()
-            error_count=sum(1 for d in diagnostics if d.get("severity",1)<=1)
-            warning_count=sum(1 for d in diagnostics if d.get("severity",1)==2)
-            self.query_one(TopMenuBar).update_diagnostics(error_count,warning_count)
-            ed=self.get_current_text_area()
-            if ed and hasattr(ed,'apply_diagnostics'):
+            error_count = sum(1 for d in diagnostics if d.get("severity", 1) <= 1)
+            warning_count = sum(1 for d in diagnostics if d.get("severity", 1) == 2)
+            self.query_one(TopMenuBar).update_diagnostics(error_count, warning_count)
+            ed = self.get_current_text_area()
+            if ed and hasattr(ed, 'apply_diagnostics'):
                 ed.apply_diagnostics(diagnostics)
+            # 强制刷新文件树以显示错误和警告
+            self.call_after_refresh(self._refresh_tree_async)
 
     def action_show_symbols(self):
         if not self.lsp.running:
@@ -3445,7 +3535,6 @@ class OneEditor(App):
             if "command" in action:
                 cmd = action["command"]
                 self.notify(f"执行命令: {cmd.get('title', '未知')}", severity="information")
-                # 可以尝试调用 LSP 执行命令（若支持）
         except Exception as e:
             self.notify(f"应用代码操作失败: {e}", severity="error")
             traceback.print_exc()
@@ -3529,13 +3618,10 @@ class OneEditor(App):
             self.notify(self._tr("no_file"),severity="warning")
             return
         self.action_save_file(tid)
-        
-        # 检测是否为 Markdown 文件
         ext = Path(fp).suffix.lower()
         if ext in ('.md', '.markdown'):
             self._preview_markdown(fp)
             return
-        
         cmd=self._get_run_command(fp)
         if not cmd:
             self.notify(self._tr("unsupported_lang"),severity="warning")
@@ -3546,7 +3632,6 @@ class OneEditor(App):
         self.run_worker(self._run_process(cmd,fp,shell=shell), exclusive=True, group="run")
 
     def _preview_markdown(self, filepath):
-        """使用 frogmouth 预览 markdown 文件，增强错误处理"""
         if shutil.which("frogmouth"):
             import subprocess, time
             try:
@@ -3690,29 +3775,28 @@ class OneEditor(App):
         return cmds
 
     def action_command_palette(self):
-        cmds = self._get_commands()
+        cmds=self._get_commands()
         def cb(a):
-            if a == "command_palette":
+            if a=="command_palette":
                 return
-            if a == "change_theme":
-                themes = ["textual-dark", "textual-light", "dracula", "nord"]
+            if a=="change_theme":
+                themes=["textual-dark","textual-light","dracula","nord"]
                 try:
-                    idx = themes.index(self.theme)
-                    next_theme = themes[(idx + 1) % len(themes)]
+                    idx=themes.index(self.theme)
+                    next_theme=themes[(idx+1)%len(themes)]
                 except:
-                    next_theme = themes[0]
-                self.theme = next_theme
-                self._settings["theme"] = next_theme
+                    next_theme=themes[0]
+                self.theme=next_theme
+                self._settings["theme"]=next_theme
                 self._save_settings()
-                self.notify(self._tr("theme_changed").format(theme=next_theme), severity="information")
+                self.notify(self._tr("theme_changed").format(theme=next_theme),severity="information")
                 return
-            if hasattr(self, f"action_{a}"):
-                getattr(self, f"action_{a}")()
+            if hasattr(self,f"action_{a}"):
+                getattr(self,f"action_{a}")()
             else:
-                self.notify(f"未知命令: {a}", severity="warning")
-        items = [{"label": desc, "action": act} for act, desc in cmds.items()]
+                self.notify(f"未知命令: {a}",severity="warning")
         try:
-            self.push_screen(OptionListMenu(self._tr("command_palette"), items, cb))
+            self.push_screen(CommandPalette(cmds,cb))
         except Exception as e:
             self.notify(f"打开命令面板失败: {e}", severity="error")
             traceback.print_exc()
@@ -3728,7 +3812,6 @@ class OneEditor(App):
         else:
             self.notify(self._tr("no_diff_tabs"),severity="warning")
 
-    # ========== 新增 P0 全局搜索 action ==========
     def action_global_search(self):
         root = self.get_current_dir()
         def open_result(path, line):
@@ -3741,7 +3824,6 @@ class OneEditor(App):
             self.call_after_refresh(jump)
         self.push_screen(GlobalSearchScreen(root, open_result))
 
-    # ========== 新增 Git 操作 ==========
     def _git_action(self, action: str):
         path = self._context_path
         try:
