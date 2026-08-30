@@ -50,38 +50,26 @@
 - 🌍 **多语言** – 内置中英文切换（设置面板）
   > **当前仅支持中文（简体）和英语**
 - ⚙️ **可配置** – 主题、缩进、自动保存、字体大小、自动换行等
-
+- 📄 **文件预览** – 支持 Markdown 和 HTML 文件在系统浏览器中预览
+- ☁️ **Git支持** - 支持 Git 操作、文件树显示 Git 文件状态等
+  > **需要在 Git 文件夹中**
 ---
 
 ## 🚀 快速开始
 
-### 安装依赖
+### 安装方法1 （推荐 Windows/macOS/Linux）
 
 ```bash
 # 克隆项目
 git clone https://github.com/Aoan2011/one-editor.git
 cd one-editor
 
-# 安装 Python 依赖
-pip install -r requirements.txt
-```
-requirements.txt 内容
-```python
-#MIT License
-
-#Copyright (c) 2026 Aoan2011
-
-textual>=0.15.0
-aiohttp>=3.14.1
-python-lsp-server>=1.0.0   # 或 pylsp
-textual[syntax] >= 8.2.8
-#ollama >= 0.6.2
-```
-运行
-```bash
+#运行
 python one-editor.py
 ```
----
+### 安装方法2 （Windows）
+前往 [Realease](https://github.com/Aoan2011/One-Editor/release) 上下载二进制文件
+
 ## 首次启动
 
 程序会自动创建 ~/.one-editor/ 目录，用于存储配置文件、插件配置、打开记录等。首次启动会显示欢迎标签页，您可以开始新建文件或打开已有项目。
@@ -132,7 +120,7 @@ python one-editor.py
 | C/C++ | clangd | 需安装 `LLVM / clangd` |
 | Java | jdtls | 需下载 `Eclipse JDT LS` |
 | Go | gopls | 需 ```go install golang.org/x/tools/gopls@latest``` |
-| Rust | rust-analyzer | 需安装 rust-analyzer |
+| Rust | rust-analyzer | 需安装 `rust-analyzer` |
 | Ruby | solargraph | 需 ```gem install solargraph``` |
 | PHP | intelephense | 需 ```npm i -g intelephense``` |
 
@@ -166,32 +154,49 @@ one-editor/
 └── README.md
 ```
 
+### Git 状态符号表
+
+| 符号 | 含义 |
+|------|------|
+| `?` | 未跟踪（Untracked） |
+| `M` | 已修改（Modified） |
+| `A` | 已暂存（Added） |
+| `D` | 已删除（Deleted） |
+| `R` | 已重命名（Renamed） |
+| `U` | 冲突（Conflict） |
+| `·` | 已跟踪但无变更（Clean） |
+
+> 状态标记显示在文件树中，格式为 `Git:<符号> <短哈希>`，例如 `Git:? <a1b2c3d>`。
+
+## 命令行说明
+``` bash
+# 打开单个文件
+python one-editor.py /path/to/file.py
+
+# 打开多个文件（会分别创建标签页）
+python one-editor.py main.py README.md
+
+# 打开目录（文件树会自动切换到该目录）
+python one-editor.py /home/user/project
+
+# 同时打开文件和目录
+python one-editor.py /home/user/project /home/user/project/main.py
+```
+## 插件设置格式
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `{FilePath}` | 当前文件的完整绝对路径 | `/home/user/project/main.py` |
+| `{FilePathWithNoExtension}` | 去掉扩展名的完整路径 | `/home/user/project/main` |
+| `{FileName}` | 文件名（含扩展名） | `main.py` |
+| `{FileNameWithNoExtension}` | 文件名（不含扩展名） | `main` |
+| `{DirPath}` | 文件所在目录的绝对路径 | `/home/user/project` |
+
 ## 已知问题
-- 部分按钮被遮挡
-- 调试仅支持Python（PDB）
-## 未来路线
-```
-1.0.x
-─────┬──────────┬────────────────────────────┬───────────────────────────┬───────────────────────►
-     │ Jul 2026 │ Aug 2026                   │ Sep 2026 — Dec 2026 / 2027│ Post‑2027
-     │Pre‑release│ Bug‑Fix                   │ Long‑term Bug‑Fix Maintenance │ End‑of‑Support
-     └──────────┴────────────────────────────┴───────────────────────────┴───────────────────────┘
-
-
-1.1.x (TBD, unconfirmed schedule)
-───────────────────────────────┬──────────────────┬──────────────────┬───────────────────────►
-                               │ CY 2027          │ + 2 calendar months │ After maintenance window
-                               │ Pre‑release      │ Bug‑Fix Phase    │ End‑of‑Support
-                               └──────────────────┴──────────────────┴───────────────────────┘
-
-Legend:
-  Pre‑release    : Feature‑complete pre‑release builds, for early testing
-  Bug‑Fix        : Only bug & security patches, no new feature development
-  End‑of‑Support : No further updates, fixes or security patches
-```
+- 性能较差
+- UI待改进
 ## 🤝 贡献
 
-欢迎提交 Issue 和 Pull Request。请确保代码符合 PEP8，并包含适当的注释。
+欢迎提交 [Issues](https://github.com/Aoan2011/One-Editor/issues) 和 [Pull Requests](https://github.com/Aoan2011/One-Editor/pulls)。请确保代码符合 PEP8，并包含适当的注释。
 ## 📄 许可证
 
 MIT 想干什么干什么
@@ -204,11 +209,13 @@ MIT 想干什么干什么
   >  所有语言服务器的开发者
 
 ## 🌟Star History
-<a href="https://www.star-history.com/?repos=Aoan2011%2FOne-Editor&type=timeline&legend=top-left">
+## Star History
+
+<a href="https://www.star-history.com/?repos=Aoan2011%2FOne-Editor&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Aoan2011/One-Editor&type=timeline&theme=dark&legend=top-left&sealed_token=lk1ftLhnXQnPWsroyelK6zDsfPPeOLbPteST0xznVh5YAo3eiSnh-cu1wahiKzPJYoxSlGlyrrMsLR9-ig4NdpNu0E8SO7qeTAClLLUHfnj2veSpRSjZnw" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Aoan2011/One-Editor&type=timeline&legend=top-left&sealed_token=lk1ftLhnXQnPWsroyelK6zDsfPPeOLbPteST0xznVh5YAo3eiSnh-cu1wahiKzPJYoxSlGlyrrMsLR9-ig4NdpNu0E8SO7qeTAClLLUHfnj2veSpRSjZnw" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Aoan2011/One-Editor&type=timeline&legend=top-left&sealed_token=lk1ftLhnXQnPWsroyelK6zDsfPPeOLbPteST0xznVh5YAo3eiSnh-cu1wahiKzPJYoxSlGlyrrMsLR9-ig4NdpNu0E8SO7qeTAClLLUHfnj2veSpRSjZnw" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Aoan2011/One-Editor&type=date&theme=dark&legend=top-left&sealed_token=qhb-GtF6Vq3beQ5n23YultNPiKJDLjpHS8-SkT5efVdkY_fTIs5IkSE9AgHhWwqEXI6uzv4X7P8qia7saaWliuS_-7ZOZtksOKaSkHwyLH0eqJlJj7to4w" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Aoan2011/One-Editor&type=date&legend=top-left&sealed_token=qhb-GtF6Vq3beQ5n23YultNPiKJDLjpHS8-SkT5efVdkY_fTIs5IkSE9AgHhWwqEXI6uzv4X7P8qia7saaWliuS_-7ZOZtksOKaSkHwyLH0eqJlJj7to4w" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Aoan2011/One-Editor&type=date&legend=top-left&sealed_token=qhb-GtF6Vq3beQ5n23YultNPiKJDLjpHS8-SkT5efVdkY_fTIs5IkSE9AgHhWwqEXI6uzv4X7P8qia7saaWliuS_-7ZOZtksOKaSkHwyLH0eqJlJj7to4w" />
  </picture>
 </a>
 

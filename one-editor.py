@@ -339,6 +339,18 @@ class OutputPanel(Vertical):
         height: 1fr;
     }
     """
+    def _scroll_to_bottom(self):
+        """强制滚动到输出底部（更可靠）"""
+        try:
+            # 获取当前总行数
+            lines = len(self.output_area.text.splitlines())
+            if lines > 0:
+                # 延迟一小段时间，确保文本已渲染，并强制设置滚动位置
+                self.call_after_refresh(
+                    lambda: self.output_area.scroll_to((lines - 1, 0), animate=False)
+                )
+        except Exception as e:
+            pass
     def compose(self):
         with Horizontal(id="output-header"):
             self.output_title = Label("输出", id="output-title")
@@ -370,6 +382,18 @@ class TerminalPanel(Vertical):
         self.current_dir=Path.cwd()
         self._history=[]
         self._history_index=0
+    def _scroll_to_bottom(self):
+        """强制滚动到输出底部（更可靠）"""
+        try:
+            # 获取当前总行数
+            lines = len(self.output_area.text.splitlines())
+            if lines > 0:
+                # 延迟一小段时间，确保文本已渲染，并强制设置滚动位置
+                self.call_after_refresh(
+                    lambda: self.output_area.scroll_to((lines - 1, 0), animate=False)
+                )
+        except Exception as e:
+            pass
     def compose(self):
         self.output_area=ReadOnlyTextArea(language=None,id="terminal-output")
         yield self.output_area
@@ -836,9 +860,9 @@ class AxiomEditor(TextArea):
                     else:
                         warnings.append(msg)
             if errors:
-                self.app.status_bar.update(f"❌ 错误: {'; '.join(errors)}")
+                self.app.status_bar.update(f"🔴: {'; '.join(errors)}")
             elif warnings:
-                self.app.status_bar.update(f"⚠️ 警告: {'; '.join(warnings)}")
+                self.app.status_bar.update(f"🟡: {'; '.join(warnings)}")
             else:
                 self.app.update_status_bar()
         except:
@@ -1243,10 +1267,12 @@ class TopMenuBar(Horizontal):
         yield Button(self.app._tr("menu_debug"),id="btn_debug",classes="menu-btn")
         self.diag_label=Button("",id="diag-counter",classes="menu-btn",variant="default")
         yield self.diag_label
-    def update_diagnostics(self,error_count,warning_count):
-        total=error_count+warning_count
-        self.diag_label.label="✓ 无错误" if total==0 else f"⚠ 错误:{error_count} 警告:{warning_count}"
-
+    def update_diagnostics(self, error_count: int, warning_count: int, lsp_supported: bool = True):
+        if not lsp_supported:
+            self.diag_label.label = "⚪ 不支持"
+        else:
+            total = error_count + warning_count
+            self.diag_label.label = "✓ 🟢" if total == 0 else f"🔴:{error_count} 🟡:{warning_count}"
 class SymbolListScreen(OptionListMenu):
     def __init__(self,symbols,app):
         self.symbols=symbols
@@ -1477,24 +1503,78 @@ class SettingsScreen(ModalScreen):
 
 # ---------- 插件页面 ----------
 class PluginDetailScreen(ModalScreen):
+    CSS = """
+    PluginDetailScreen { background: rgba(0,0,0,0.6); align: center middle; }
+    #plugin-detail-box {
+        background: $surface;
+        padding: 2 3;
+        border: round $accent;
+        width: 60;
+        height: auto;
+        max-height: 80%;
+        overflow-y: auto;
+    }
+    #plugin-detail-box > Label { margin: 1 0; }
+    #plugin-detail-box > Label.title { text-style: bold; margin-bottom: 2; }
+    #plugin-detail-box > Label.author { color: $text-muted; margin-bottom: 2; }
+    #plugin-detail-box > Button { width: 100%; margin-top: 1; }
+    """
     def __init__(self, name, desc, is_builtin=True, settings_format=""):
         super().__init__()
         self.plugin_name = name
         self.desc = desc
         self.is_builtin = is_builtin
         self.settings_format = settings_format
+
     def compose(self):
-        yield Label(f"插件名称: {self.plugin_name}")
-        yield Label(f"类型: {'built-in' if self.is_builtin else 'external'}")
-        yield Label(f"介绍: {self.desc}")
-        yield Label(f"设置格式: {self.settings_format}")
-        yield Button("关闭", id="close")
+        with Container(id="plugin-detail-box"):
+            yield Label(f"插件名称: {self.plugin_name}", classes="title")
+            yield Label(f"类型: {'内置' if self.is_builtin else '外部'}")
+            yield Label(f"介绍: {self.desc}")
+            yield Label(f"设置格式: {self.settings_format}")
+            # 新增作者信息
+            yield Label("作者: @Aoan2011", classes="author")
+            yield Button("关闭", id="close")
+
     def on_button_pressed(self, event):
         self.dismiss()
 
 class PluginsScreen(ModalScreen):
-    # 优化布局：增加行高，自动宽度，防止文字被截断
-    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}#plugins-container{background:$surface;padding:2 3;border:round $accent;width:80;height:auto;max-height:80%;overflow-y:auto;overflow-x:auto;}.plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}.plugin-row{height:auto;min-height:4;padding:0 1;margin:0 0 1 0;background:$surface;border:none;}.plugin-row:hover{background:$panel;}.plugin-name{width:12;}.plugin-server{width:20;}.plugin-status{width:10;}.plugin-features{width:1fr;}.toggle-btn{width:auto;min-width:12;height:3;border:none;background:$primary;color:$text;padding:0 2;}.toggle-btn.off{background:$surface;color:$text-muted;}.settings-btn{width:auto;min-width:8;height:3;border:none;background:$accent;color:$text;padding:0 2;}.settings-btn:hover{background:$primary;}#plugins-close{dock:right;border:none;background:$surface;color:$text;}#plugins-close:hover{background:$error;color:$text;}.feature-row{height:auto;min-height:2;padding:0 1;}"""
+    # 优化布局：增加行高，自动宽度，防止文字被截断，且支持底部横向滚动条
+    CSS = """PluginsScreen{background:rgba(0,0,0,0.6);align:center middle;}
+    #plugins-container{
+        background:$surface;
+        padding:2 3;
+        border:round $accent;
+        width:80;
+        height:auto;
+        max-height:80%;
+        overflow-y:auto;
+        overflow-x:auto;       /* 关键：开启横向滚动 */
+        min-width:0;           /* 关键：防止Flex子项挤压隐藏滚动条 */
+    }
+    .plugin-header{height:2;background:$panel;text-style:bold;padding:0 1;}
+    .plugin-row{
+        height:auto;
+        min-height:4;
+        padding:0 1;
+        margin:0 0 1 0;
+        background:$surface;
+        border:none;
+        min-width:100%;        /* 保持行至少占满宽度，根据内容可撑开 */
+    }
+    .plugin-row:hover{background:$panel;}
+    .plugin-name{width:12;}
+    .plugin-server{width:20;}
+    .plugin-status{width:10;}
+    .plugin-features{width:1fr;}
+    .toggle-btn{width:auto;min-width:12;height:3;border:none;background:$primary;color:$text;padding:0 2;}
+    .toggle-btn.off{background:$surface;color:$text-muted;}
+    .settings-btn{width:auto;min-width:8;height:3;border:none;background:$accent;color:$text;padding:0 2;}
+    .settings-btn:hover{background:$primary;}
+    #plugins-close{dock:right;border:none;background:$surface;color:$text;}
+    #plugins-close:hover{background:$error;color:$text;}
+    .feature-row{height:auto;min-height:2;padding:0 1;min-width:100%;}"""
     def __init__(self,app):
         super().__init__()
         self.app_ref=app
@@ -1568,7 +1648,7 @@ class PluginsScreen(ModalScreen):
             if name=="git":
                 settings_format = '{"git": {"enabled": true}}'
             elif name=="ollama":
-                settings_format = '{"ollama": {"enabled": true, "model": "gpt-oss:20b-cloud"}}'
+                settings_format = '{"ollama": {"enabled": true, \n"model": "gpt-oss:20b-cloud"}}'
             self.app.push_screen(PluginDetailScreen(name, desc, True, settings_format))
         elif event.button.id.startswith("settings_"):
             name=event.button.id.split("_")[1]
@@ -1606,7 +1686,7 @@ class LanguageSettingsScreen(ModalScreen):
             yield Label(self.app._tr("run_cmd")+":")
             self.run_input=Input(value=self.config.get("run_cmd",""),id="run-cmd")
             yield self.run_input
-            yield Label("支持变量: {FilePath}, {FilePathWithNoExtension}, {FileName}, {FileNameWithNoExtension}, {DirPath}", classes="hint")
+            yield Label("支持变量: {FilePath}, \n{FilePathWithNoExtension}, \n{FileName}, \n{FileNameWithNoExtension}, \n{DirPath}", classes="hint")
             yield Label(" ")
             yield Button("保存",variant="primary",id="save-lang-settings")
             yield Button(self.app._tr("cancel"),id="cancel-lang-settings")
@@ -1677,7 +1757,18 @@ class OllamaPanel(Vertical):
         self._ollama_model="gpt-oss:20b-cloud"
         self._is_loading=False
         self._stop_flag=False
-        
+    def _scroll_to_bottom(self):
+        """强制滚动到输出底部（更可靠）"""
+        try:
+            # 获取当前总行数
+            lines = len(self.output_area.text.splitlines())
+            if lines > 0:
+                # 延迟一小段时间，确保文本已渲染，并强制设置滚动位置
+                self.call_after_refresh(
+                    lambda: self.output_area.scroll_to((lines - 1, 0), animate=False)
+                )
+        except Exception as e:
+            pass
     def on_mount(self):
         self._ollama_url=self.app_ref._settings.get("ollama_url","http://localhost:11434")
         self._ollama_model=self.app_ref._settings.get("ollama_model","gpt-oss:20b-cloud")
@@ -1892,6 +1983,7 @@ class OneEditor(App):
         self._language="zh"
         self._settings=self._load_settings()
         self._initial_files = []
+        self._tree_refresh_timer = None    # <-- 添加这一行
     BINDINGS = [
         Binding("ctrl+n","new_file","新建",show=False),
         Binding("ctrl+o","open_file","打开",show=False),
@@ -2041,11 +2133,8 @@ class OneEditor(App):
             return 0, 0
 
     def _refresh_tree_async(self):
-        try:
-            self.file_tree.refresh_status()
-            self.run_worker(self.file_tree.reload())
-        except Exception:
-            pass
+        """兼容旧调用，实际转发到节流版本"""
+        self._schedule_tree_refresh()
 
     def compose(self):
         yield Header()
@@ -2162,6 +2251,24 @@ class OneEditor(App):
                 self.notify(f"未找到文件: {file_path}", severity="warning")
         
         self.notify(f"欢迎使用 One-Editor {self._tr('about_version')}", severity="information", timeout=3)
+        # 在 on_mount() 中添加
+        self._tree_refresh_timer = None
+
+# 新增方法
+    def _schedule_tree_refresh(self):
+        """延迟刷新：合并短时间内的多次请求"""
+        if self._tree_refresh_timer is not None:
+            self._tree_refresh_timer.stop()
+        self._tree_refresh_timer = self.set_timer(0.5, self._refresh_tree_now)
+
+    def _refresh_tree_now(self):
+        """立即刷新文件树"""
+        self._tree_refresh_timer = None
+        try:
+            self.file_tree.refresh_status()
+            self.run_worker(self.file_tree.reload(), exclusive=True, group="tree-refresh")
+        except Exception:
+            pass
 
     def _get_welcome_text(self):
         lang=self._current_lang or "未知"
@@ -2525,19 +2632,23 @@ class OneEditor(App):
         self._find_matches=[]
         self._find_index=-1
         self._hide_find_replace()
-        self.call_after_refresh(self._refresh_tree_async)
+        self._schedule_tree_refresh()   # 诊断更新不紧急，延迟合并
         self._save_state()
         container=data.get("container")
         if container and container.parent:
             container.scroll_visible()
-        fp=data.get("filepath")
+        fp = data.get("filepath")
         if fp and Path(fp).exists():
             self.terminal_panel.set_cwd(Path(fp).parent)
-            self._start_lsp_for_file(fp,data["textarea"].text)
+            # 先重置指示器为 ⚪，防止旧状态残留
+            self.query_one(TopMenuBar).update_diagnostics(0, 0, False)
+            self._start_lsp_for_file(fp, data["textarea"].text)
             self._expand_to_file(fp)
         else:
-            if data.get("is_welcome",False):
-                data["textarea"].text=self._get_welcome_text()
+            if data.get("is_welcome", False):
+                data["textarea"].text = self._get_welcome_text()
+            # 无文件时也显示 ⚪
+            self.query_one(TopMenuBar).update_diagnostics(0, 0, False)
 
     def _update_tab_styles(self):
         for tid,d in self._tab_data.items():
@@ -3373,7 +3484,7 @@ class OneEditor(App):
     def _refresh_file_tree(self):
         try:
             self.file_tree.refresh_status()
-            self.call_after_refresh(self._refresh_tree_async)
+            self._schedule_tree_refresh()   # 诊断更新不紧急，延迟合并
         except:
             self.file_tree.path=self.file_tree.path
         self.refresh()
@@ -3424,31 +3535,38 @@ class OneEditor(App):
         except Exception as e:
             self.notify(f"截图失败: {e}",severity="error")
 
-    def _start_lsp_for_file(self,filepath,content):
-        lang=detect_language(filepath)
+    def _start_lsp_for_file(self, filepath, content):
+        lang = detect_language(filepath)
         if not lang or lang not in LANG_SERVERS:
             if self.lsp.running:
                 self.run_worker(self.lsp.stop(), exclusive=True, group="lsp")
-                self._current_lang=None
+                self._current_lang = None
+            # 清除诊断缓存
+            self._diagnostics_cache.clear()
+            self.query_one(TopMenuBar).update_diagnostics(0, 0, False)
             return
-        self._current_uri=path_to_uri(filepath)
-        if lang!=self._current_lang:
-            self.run_worker(self._swap_lsp(lang,filepath,content), exclusive=True, group="lsp")
+        self._current_uri = path_to_uri(filepath)
+        if lang != self._current_lang:
+            self.run_worker(self._swap_lsp(lang, filepath, content), exclusive=True, group="lsp")
         elif self.lsp.running:
-            self.lsp.did_open(filepath,content)
-            self.notify(self._tr("lsp_started").format(lang=lang),severity="information")
+            self.lsp.did_open(filepath, content)
+            self.notify(self._tr("lsp_started").format(lang=lang), severity="information")
 
-    async def _swap_lsp(self,lang,filepath,content):
+    async def _swap_lsp(self, lang, filepath, content):
         await self.lsp.stop()
-        root=os.path.dirname(filepath) or "."
-        ok=await self.lsp.start(lang,root)
+        root = os.path.dirname(filepath) or "."
+        ok = await self.lsp.start(lang, root)
         if ok:
-            self._current_lang=lang
-            self.lsp.did_open(filepath,content)
-            self.notify(self._tr("lsp_started").format(lang=lang),severity="information")
+            self._current_lang = lang
+            self.lsp.did_open(filepath, content)
+            # 启动成功，先显示绿色（等待诊断回调）
+            self.query_one(TopMenuBar).update_diagnostics(0, 0, True)
+            self.notify(self._tr("lsp_started").format(lang=lang), severity="information")
         else:
-            self._current_lang=None
-            self.notify(self._tr("lsp_failed").format(lang=lang),severity="error")
+            self._current_lang = None
+            self._diagnostics_cache.clear()
+            self.query_one(TopMenuBar).update_diagnostics(0, 0, False)
+            self.notify(self._tr("lsp_failed").format(lang=lang), severity="error")
 
     def on_text_area_changed(self,event):
         if event.text_area is self.get_current_text_area():
@@ -3569,7 +3687,7 @@ class OneEditor(App):
             ed = self.get_current_text_area()
             if ed and hasattr(ed, 'apply_diagnostics'):
                 ed.apply_diagnostics(diagnostics)
-            self.call_after_refresh(self._refresh_tree_async)
+            self._schedule_tree_refresh()   # 诊断更新不紧急，延迟合并
 
     def action_show_symbols(self):
         if not self.lsp.running:
@@ -4017,6 +4135,7 @@ class OneEditor(App):
                     self.output_panel.output_area.text+=line.decode('gbk')
                 except:
                     self.output_panel.output_area.text+=line.decode('utf-8',errors='replace')
+            self.output_panel._scroll_to_bottom() 
         while True:
             line=await proc.stderr.readline()
             if not line:
@@ -4028,6 +4147,7 @@ class OneEditor(App):
                     self.output_panel.output_area.text+=line.decode('gbk')
                 except:
                     self.output_panel.output_area.text+=line.decode('utf-8',errors='replace')
+            self.output_panel._scroll_to_bottom() 
         await proc.wait()
         self.notify(self._tr("run_success").format(code=proc.returncode),severity="information")
 

@@ -33,6 +33,7 @@ class GitStatusTree(DirectoryTree):
         self._repo: Optional[Repo] = None
         self._status_cache: Dict[str, str] = {}
         self._diagnostics_provider: Optional[Callable[[str], Tuple[int, int]]] = None
+        self._short_hash: Optional[str] = None
         self._try_load_repo(path)
 
     def _try_load_repo(self, path: str):
@@ -42,12 +43,15 @@ class GitStatusTree(DirectoryTree):
         except InvalidGitRepositoryError:
             self._repo = None
             self._status_cache = {}
+            self._short_hash = None
 
     def refresh_status(self):
         self._status_cache.clear()
         if not self._repo:
+            self._short_hash = None
             return
         try:
+            self._short_hash = self._repo.git.rev_parse("HEAD", short=True)
             porcelain = self._repo.git.status("--porcelain", "--untracked-files=all").splitlines()
             for line in porcelain:
                 if len(line) >= 3:
@@ -81,34 +85,56 @@ class GitStatusTree(DirectoryTree):
         if node.data is not None:
             path = node.data.path if hasattr(node.data, 'path') else str(node.data)
             path = str(Path(path).resolve())
-            status = self.get_status(path).strip()  # <--- 关键修复！去除首尾空格！
+            status = self.get_status(path).strip()
             errors, warnings = self.get_diagnostics(path)
 
             # 构建标记
             parts = []
-            if errors > 0 or warnings > 0:
-                diag_parts = []
-                if errors > 0: diag_parts.append(str(errors))
-                if warnings > 0: diag_parts.append(str(warnings))
-                parts.append(f"[bold red]{','.join(diag_parts)}[/]")
-            
+
+            # --- Git 状态部分：Git:符号 <短哈希> ---
             if status:
+                # 根据状态映射颜色和符号
                 if status.startswith("??"):
-                    parts.append("[bold green]?[/]")
+                    git_symbol = "[bold green]?[/]"
+                    hash_color = "[bold green]"
                 elif status.startswith("M"):
-                    parts.append("[bold yellow]M[/]")
+                    git_symbol = "[bold yellow]M[/]"
+                    hash_color = "[bold yellow]"
                 elif status.startswith("A"):
-                    parts.append("[bold green]A[/]")
+                    git_symbol = "[bold green]A[/]"
+                    hash_color = "[bold green]"
                 elif status.startswith("D"):
-                    parts.append("[bold red]D[/]")
+                    git_symbol = "[bold red]D[/]"
+                    hash_color = "[bold red]"
                 elif status.startswith("R"):
-                    parts.append("[bold cyan]R[/]")
+                    git_symbol = "[bold cyan]R[/]"
+                    hash_color = "[bold cyan]"
                 elif status.startswith("U"):
-                    parts.append("[bold magenta]U[/]")
+                    git_symbol = "[bold magenta]U[/]"
+                    hash_color = "[bold magenta]"
+                else:
+                    git_symbol = "[bold white]·[/]"
+                    hash_color = "[bold white]"
+
+                # 构建 Git 部分
+                git_part = f"Git:{git_symbol}"
+                if self._short_hash:
+                    git_part += f" {hash_color}<{self._short_hash}>[/]"
+                parts.append(git_part)
+
+            # --- 诊断部分：警告数量(橙色粗体) , 错误数量(红色粗体) ---
+            diag_parts = []
+            if warnings > 0:
+                diag_parts.append(f"[bold #FFA500]{warnings}[/]")  # 使用十六进制橙色
+            if errors > 0:
+                diag_parts.append(f"[bold red]{errors}[/]")
+            if diag_parts:
+                diag_str = ", ".join(diag_parts)
+                parts.append(diag_str)
 
             if parts:
-                marker_str = ", ".join(parts)
-                # 【验证】只要这行打印了，界面上就必定显示！
+                marker_str = "   ".join(parts)  # 用3个空格分隔Git部分和诊断部分
+                # 调试输出（验证是否生效）
                 print(f">>> 最终显示：'{label.plain} ({marker_str})'")
                 # 保留图标，追加后缀
                 label.append_text(Text.from_markup(f" ({marker_str})"))
