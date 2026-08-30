@@ -151,6 +151,10 @@ one-editor/
 ├── lsp.py # LSP 客户端封装
 ├── companion.py # Competitive Companion 服务器
 ├── requirements.txt # 依赖
+├── gitstatus.py
+├── translations.py
+├── security.md
+├── previewer.py
 └── README.md
 ```
 
