@@ -26,6 +26,7 @@
 
 **One Editor** 是一款由准高中生基于 [Textual](https://textual.textualize.io) 构建的现代化终端代码编辑器，提供接近 VSCode 的编辑体验，同时保持轻量、快速和高度可定制。
 
+> [!CAUTION]
 > **您好！该项目仍处于测试阶段，不正当的使用可能会产生意想不到的后果**
 
 ![One Editor 截图](img1.png) 
@@ -152,8 +153,17 @@ one-editor/
 ├── companion.py # Competitive Companion 服务器
 ├── requirements.txt # 依赖
 ├── gitstatus.py
-├── translations.py
+├── i18n.py
 ├── security.md
+├── config.py
+├── large_file.py
+├── panels.py
+├── editor_widgets.py
+├── markdown_previewer.py
+├── constants.py
+├── swap.py
+├── utils.py
+├── screens.py
 ├── previewer.py
 └── README.md
 ```

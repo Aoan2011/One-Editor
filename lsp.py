@@ -154,13 +154,22 @@ class LspClient:
             },
         })
 
-    def did_change(self, text: str) -> None:
+    def did_change(self, text: str, changes: list[dict] | None = None) -> None:
+        """发送文档变更。
+
+        changes 为 LSP 增量 changes 列表；为 None 或空时发送全文。
+        增量 changes 中每个元素格式：
+        {"range": {"start": {"line": L, "character": C},
+                   "end": {"line": L, "character": C}},
+         "text": "新内容"}
+        """
         if not self._uri:
             return
         self._version += 1
+        content_changes = changes if changes else [{"text": text}]
         self._schedule_notify("textDocument/didChange", {
             "textDocument": {"uri": self._uri, "version": self._version},
-            "contentChanges": [{"text": text}],
+            "contentChanges": content_changes,
         })
 
     def _schedule_notify(self, method: str, params: Any) -> None:
@@ -275,6 +284,34 @@ class LspClient:
     def set_diagnostics_callback(self, cb) -> None:
         self._diag_callback = cb
 
+    async def references(self, line: int, col: int,
+                         include_declaration: bool = True) -> list[dict]:
+        """查找所有引用。返回 [{"uri", "line", "col"}, ...]"""
+        if not self._uri or not self.running:
+            return []
+        try:
+            result = await asyncio.wait_for(self._request(
+                "textDocument/references",
+                {
+                    "textDocument": {"uri": self._uri},
+                    "position": {"line": line, "character": col},
+                    "context": {"includeDeclaration": include_declaration},
+                },
+            ), timeout=5)
+        except Exception:
+            return []
+        if not result:
+            return []
+        out = []
+        for item in result:
+            uri = item.get("uri", "")
+            start = item.get("range", {}).get("start", {})
+            out.append({
+                "uri": uri,
+                "line": start.get("line", 0),
+                "col": start.get("character", 0),
+            })
+        return out
     async def code_action(self, line: int, col: int) -> List[Dict[str, Any]]:
         if not self._uri or not self.running:
             return []

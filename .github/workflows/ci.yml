@@ -1,0 +1,172 @@
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+# 同分支多次 push 自动取消旧任务
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小权限
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================
+  # Job 1：代码风格（Ruff check + format）
+  # ============================================================
+  lint:
+    name: Lint (Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Ruff check
+        run: ruff check . --output-format=github
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  # ============================================================
+  # Job 2：类型检查（可选，失败不阻塞合并）
+  # ============================================================
+  type-check:
+    name: Type Check (mypy)
+    runs-on: ubuntu-latest
+    continue-on-error: true       # 不阻塞 PR；后续稳定后可删这行
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: mypy
+        run: |
+          mypy utils.py config.py constants.py swap.py keymap.py large_file.py \
+            --ignore-missing-imports \
+            --no-error-summary || true
+
+  # ============================================================
+  # Job 3：测试（矩阵：ubuntu + windows × Python 3.11/3.12/3.13）
+  # ============================================================
+  test:
+    name: Test · ${{ matrix.os }} · Py${{ matrix.python-version }}
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+        python-version: [ "3.11", "3.12", "3.13" ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # Windows 默认 git 未配置 user，git fixture 依赖它
+      - name: Configure git (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          git config --global user.email "ci@one-editor.dev"
+          git config --global user.name  "One-Editor CI"
+
+      # Textual 在 headless CI 环境有时需要 TTY 兼容参数
+      - name: Set headless env
+        run: echo "TEXTUAL_HEADLESS=1" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Run tests
+        shell: bash
+        run: |
+          mkdir -p junit
+          pytest tests/ -v -n auto \
+            --cov=. --cov-report=xml:coverage.xml --cov-report=term-missing \
+            --junitxml=junit/test-${{ matrix.python-version }}-${{ matrix.os }}.xml
+
+      - name: Upload coverage (Ubuntu / 3.12 only)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          fail_ci_if_error: false
+        env:
+          # 公开仓库无需 token；私有仓库需在 Repo Settings → Secrets 配置 CODECOV_TOKEN
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.python-version }}-${{ matrix.os }}
+          path: junit/
+          retention-days: 7
+
+      - name: Upload coverage xml
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 7
+
+  # ============================================================
+  # Job 4：CLI 冒烟（确认 one-editor.py 能 --help / 启动不崩）
+  # ============================================================
+  cli-smoke:
+    name: CLI Smoke
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Import check (one_editor)
+        run: python -c "import one_editor; print('OK:', one_editor.OneEditor.__name__)"
+
+      - name: Wrapper import check
+        run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('w', 'one-editor.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('wrapper OK')"

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "one-editor"
+version = "1.2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.60",
+    "gitpython>=3.1",
+    "charset-normalizer>=3.0",
+    "markdown>=3.5",
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+]
+
+# ---------------- pytest ----------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+# 关键：把项目根加入 sys.path，才能 import utils / swap / gitstatus 等
+pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning:git.*",
+]
+
+# ---------------- Ruff ----------------
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+# ---------------- Coverage ----------------
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "one-editor.py",
+    "one_editor.py",
+    "*/__init__.py",
+]

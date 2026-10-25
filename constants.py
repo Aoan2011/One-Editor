@@ -57,3 +57,8 @@ class FileOperation:
         self.old_data = old_data
         self.new_data = new_data
         self.old_path = old_path
+
+# ============ 重构新增 ============
+SWAP_DIR = CONFIG_DIR / "swap"
+KEYMAP_FILE = CONFIG_DIR / "keymap.json"
+RECENT_MAX = 10

@@ -3,8 +3,7 @@ import json
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
-
-from constants import CONFIG_DIR, CONFIG_FILE, DEFAULT_SETTINGS, PLUGIN_CONFIG_FILE
+from constants import CONFIG_DIR, CONFIG_FILE, DEFAULT_SETTINGS, PLUGIN_CONFIG_FILE, RECENT_MAX
 
 
 class ConfigManager:
@@ -96,3 +95,21 @@ class ConfigManager:
             PLUGIN_CONFIG_FILE.write_text(
                 json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8"
             )
+    # ---------- recent files ----------
+    @classmethod
+    def load_recent_files(cls) -> list[str]:
+        with cls._lock:
+            return list(cls._read_state().get("recent_files", []))
+
+    @classmethod
+    def add_recent_file(cls, filepath: str) -> None:
+        if not filepath:
+            return
+        with cls._lock:
+            state = cls._read_state()
+            recent = list(state.get("recent_files", []))
+            # 去重并放到最前
+            recent = [f for f in recent if f != filepath]
+            recent.insert(0, filepath)
+            state["recent_files"] = recent[:RECENT_MAX]
+            cls._write_state(state)

@@ -383,22 +383,27 @@ class AboutScreen(ModalScreen):
 # 全局搜索（修复：rsplit 兼容 Windows）
 # ============================================================
 class GlobalSearchScreen(ModalScreen):
+    """全局搜索 + 跨文件替换。"""
     CSS = """
     GlobalSearchScreen { background: rgba(0,0,0,0.6); align: center middle; }
     #global-search-container { background: $surface; padding: 1 2;
         border: round $accent; width: 80; height: 60%; overflow-y: auto; }
     #global-search-header { height: 3; }
     #global-search-input { width: 1fr; margin-right: 1; }
-    #global-search-count { color: $text-muted; margin-left: 1; }
+    #global-search-replace-bar { height: 3; margin-top: 1; }
+    #global-search-replace { width: 1fr; margin-right: 1; }
+    #global-search-count { color: $text-muted; margin: 1 0; }
     #global-search-results { height: 1fr; }
     """
 
-    def __init__(self, root_path: str, callback):
+    def __init__(self, root_path: str, callback, replace_callback=None):
         super().__init__()
         self.root_path = root_path
-        self.callback = callback
+        self.callback = callback                    # (path, line) -> None
+        self.replace_callback = replace_callback    # (dict, old, new) -> None
         self._results: list[tuple[str, int, str]] = []
         self._search_input: Input | None = None
+        self._replace_input: Input | None = None
         self._results_list: OptionList | None = None
 
     def compose(self) -> ComposeResult:
@@ -410,6 +415,13 @@ class GlobalSearchScreen(ModalScreen):
                 )
                 yield self._search_input
                 yield Button("搜索", id="global-search-btn", variant="primary")
+            with Horizontal(id="global-search-replace-bar"):
+                self._replace_input = Input(
+                    placeholder="替换为...", id="global-search-replace"
+                )
+                yield self._replace_input
+                yield Button("全部替换", id="global-search-replace-all",
+                             variant="warning")
             yield Static("", id="global-search-count")
             self._results_list = OptionList(id="global-search-results")
             yield self._results_list
@@ -419,9 +431,12 @@ class GlobalSearchScreen(ModalScreen):
         self._perform_search(event.value)
 
     def on_button_pressed(self, event):
-        if event.button.id == "global-search-btn":
+        bid = event.button.id
+        if bid == "global-search-btn":
             self._perform_search(self._search_input.value)
-        elif event.button.id == "global-search-close":
+        elif bid == "global-search-replace-all":
+            self._do_replace_all()
+        elif bid == "global-search-close":
             self.dismiss()
 
     def _perform_search(self, query: str):
@@ -440,7 +455,8 @@ class GlobalSearchScreen(ModalScreen):
             for path in Path(self.root_path).rglob("*"):
                 if path.is_file() and not path.name.startswith("."):
                     try:
-                        with path.open("r", encoding="utf-8", errors="ignore") as f:
+                        with path.open("r", encoding="utf-8",
+                                       errors="ignore") as f:
                             for i, line in enumerate(f, 1):
                                 if query in line:
                                     lines.append(f"{path}:{i}:{line.rstrip()}")
@@ -451,7 +467,6 @@ class GlobalSearchScreen(ModalScreen):
 
         self._results = []
         for line in lines:
-            # 修复：从右切两刀，兼容 Windows 盘符 C:\...
             parts = line.rsplit(":", 2)
             if len(parts) == 3:
                 try:
@@ -478,19 +493,223 @@ class GlobalSearchScreen(ModalScreen):
         opt = event.option
         if opt.id and opt.id.startswith("result_"):
             idx = int(opt.id.split("_")[1])
-            self._select_result(idx)
+            if 0 <= idx < len(self._results):
+                path, line, _ = self._results[idx]
+                self.dismiss()
+                self.callback(path, line)
 
-    def _select_result(self, idx):
-        if 0 <= idx < len(self._results):
-            path, line, _ = self._results[idx]
-            self.dismiss()
-            self.callback(path, line)
+    def _do_replace_all(self):
+        old = self._search_input.value
+        new = self._replace_input.value
+        if not old:
+            self.notify("请先在搜索框输入要替换的内容", severity="warning")
+            return
+        if not self._results:
+            self.notify("请先执行搜索", severity="warning")
+            return
+        if not self.replace_callback:
+            self.notify("替换功能不可用", severity="warning")
+            return
+        from collections import defaultdict
+        by_file = defaultdict(list)
+        for path, line, _ in self._results:
+            by_file[path].append(line)
+        self.dismiss()
+        self.replace_callback(dict(by_file), old, new)
 
     def on_key(self, event):
         if event.key == "escape":
             self.dismiss()
+class ReferencesScreen(OptionListMenu):
+    """LSP references 结果列表。"""
 
+    def __init__(self, refs: list[dict], app):
+        from lsp import uri_to_path
+        self.app_ref = app
 
+        items = []
+        for r in refs:
+            try:
+                path = uri_to_path(r["uri"])
+            except Exception:
+                path = r.get("uri", "")
+            display = f"{Path(path).name}:{r['line']+1}:{r['col']+1}  {path}"
+            items.append({
+                "label": display,
+                "action": (path, r["line"], r["col"]),
+            })
+
+        def cb(loc):
+            path, line, col = loc
+            app_ref._open_file_by_path(Path(path))
+
+            def jump():
+                ed = app_ref.get_current_text_area()
+                if ed:
+                    ed.cursor_location = (line, col)
+                    ed.focus()
+
+            app_ref.call_after_refresh(jump)
+
+        super().__init__(f"引用 ({len(refs)})", items, cb)
+class GitScreen(ModalScreen):
+    """Git 面板：staged / unstaged / untracked 列表 + 提交。"""
+    CSS = """
+    GitScreen { background: rgba(0,0,0,0.6); align: center middle; }
+    #git-container { background: $surface; padding: 1 2;
+        border: round $accent; width: 80; height: 70%; overflow-y: auto; }
+    #git-header { height: 3; margin-bottom: 1; }
+    #git-title { width: auto; text-style: bold; margin-right: 2; }
+    #git-branch { width: 1fr; color: $text-muted; }
+    #git-header > Button { height: 3; margin: 0 1; }
+    #git-files { height: 1fr; border: none; }
+    #git-commit-bar { height: 3; margin-top: 1; }
+    #git-commit-input { width: 1fr; margin-right: 1; }
+    """
+
+    def __init__(self, app, root_path: str):
+        super().__init__()
+        self.app_ref = app
+        self.root_path = root_path
+        self._repo = None
+        self._status_items: list[tuple[str, str]] = []
+        self._commit_input: Input | None = None
+        self._files_list: OptionList | None = None
+        self._branch_label: Label | None = None
+
+    def compose(self) -> ComposeResult:
+        with Container(id="git-container"):
+            with Horizontal(id="git-header"):
+                yield Label("🌿 Git", id="git-title")
+                self._branch_label = Label("", id="git-branch")
+                yield self._branch_label
+                yield Button("刷新", id="git-refresh")
+                yield Button("全部暂存", id="git-stage-all")
+                yield Button("✕", id="git-close", variant="error")
+            self._files_list = OptionList(id="git-files")
+            yield self._files_list
+            with Horizontal(id="git-commit-bar"):
+                self._commit_input = Input(
+                    placeholder="Commit message...", id="git-commit-input"
+                )
+                yield self._commit_input
+                yield Button("提交", id="git-commit-btn", variant="primary")
+
+    def on_mount(self):
+        self._refresh()
+
+    def _refresh(self):
+        try:
+            from git import Repo
+            self._repo = Repo(self.root_path, search_parent_directories=True)
+            try:
+                branch = self._repo.active_branch.name
+            except Exception:
+                branch = "HEAD detached"
+            self._branch_label.update(f"  ({branch})")
+        except Exception:
+            self._branch_label.update("  (非 Git 仓库)")
+            self._files_list.clear_options()
+            self._files_list.add_option(Option("(当前目录不在 Git 仓库中)", id="none"))
+            return
+
+        try:
+            porcelain = self._repo.git.status(
+                "--porcelain", "--untracked-files=all"
+            ).splitlines()
+        except Exception as e:
+            self.notify(f"获取状态失败: {e}", severity="error")
+            return
+
+        self._status_items = []
+        self._files_list.clear_options()
+        for line in porcelain:
+            if len(line) < 3:
+                continue
+            xy = line[:2]
+            path_str = line[3:].strip()
+            if "->" in path_str:
+                path_str = path_str.split("->")[-1].strip()
+            self._status_items.append((xy, path_str))
+            marker = self._describe_status(xy)
+            self._files_list.add_option(
+                Option(f"{marker}  {path_str}",
+                       id=f"item_{len(self._status_items)-1}")
+            )
+
+        if not self._status_items:
+            self._files_list.add_option(Option("(工作区干净 ✓)", id="clean"))
+
+    @staticmethod
+    def _describe_status(xy: str) -> str:
+        if xy == "??":
+            return "[green]??[/]"
+        x = xy[0] if len(xy) > 0 else " "
+        y = xy[1] if len(xy) > 1 else " "
+        parts = []
+        if x != " " and x != "?":
+            parts.append(f"[cyan]{x}[/]")
+        if y != " " and y != "?":
+            parts.append(f"[yellow]{y}[/]")
+        return "".join(parts) if parts else "??"
+
+    def on_button_pressed(self, event):
+        bid = event.button.id
+        if bid == "git-close":
+            self.dismiss()
+        elif bid == "git-refresh":
+            self._refresh()
+        elif bid == "git-stage-all":
+            self._stage_all()
+        elif bid == "git-commit-btn":
+            self._do_commit()
+
+    def _stage_all(self):
+        if not self._repo:
+            return
+        try:
+            self._repo.git.add(A=True)
+            self.notify("已全部暂存", severity="information")
+            self._refresh()
+        except Exception as e:
+            self.notify(f"暂存失败: {e}", severity="error")
+
+    def on_option_list_option_selected(self, event):
+        opt_id = event.option.id
+        if not opt_id or not opt_id.startswith("item_"):
+            return
+        idx = int(opt_id.split("_")[1])
+        if idx >= len(self._status_items):
+            return
+        xy, path = self._status_items[idx]
+        try:
+            if xy == "??":
+                self._repo.git.add(path)
+            elif xy[0] in "MADRC":
+                self._repo.git.reset("HEAD", "--", path)
+            else:
+                self._repo.git.add(path)
+            self._refresh()
+        except Exception as e:
+            self.notify(f"操作失败: {e}", severity="error")
+
+    def _do_commit(self):
+        msg = self._commit_input.value.strip()
+        if not msg:
+            self.notify("Commit message 不能为空", severity="warning")
+            return
+        try:
+            self._repo.git.add(A=True)
+            self._repo.index.commit(msg)
+            self.notify("提交成功", severity="information")
+            self._commit_input.value = ""
+            self._refresh()
+        except Exception as e:
+            self.notify(f"提交失败: {e}", severity="error")
+
+    def on_key(self, event):
+        if event.key == "escape":
+            self.dismiss()
 # ============================================================
 # 命令面板
 # ============================================================
