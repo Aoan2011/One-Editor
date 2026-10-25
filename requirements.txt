@@ -29,11 +29,9 @@ charset-normalizer>=3.0,<4.0
 
 # ---- LSP 服务器（可选，装了才支持 Python LSP）----
 python-lsp-server>=1.12.0,<2.0
-=======
 textual>=0.15.0
 aiohttp>=3.14.3
 python-lsp-server>=1.15.0   # 或 pylsp
 textual[syntax] >= 8.2.8
 pythongit>=3.1.60
 Markdown>=3.11
->>>>>>> 1c13c818e646da9fe5fe81fc50c61c33d62e21cb
