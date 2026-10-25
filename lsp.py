@@ -1,31 +1,9 @@
-'''
-MIT License
-
-Copyright (c) 2026 Aoan2011
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-'''
+"""LSP 客户端：修复 drain、pending future 取消、进程崩溃处理。"""
 import asyncio
 import json
 import os
-import subprocess
-from typing import Optional, List, Dict, Any
+import shutil
+from typing import Any, Dict, List, Optional
 
 LANG_SERVERS = {
     "python": ["pylsp"],
@@ -40,31 +18,35 @@ LANG_SERVERS = {
     "php": ["intelephense", "--stdio"],
 }
 
+
 def path_to_uri(path: str) -> str:
-    path = os.path.abspath(path).replace("\\", "/")
-    if not path.startswith("/"):
-        path = "/" + path
-    return f"file://{path}"
+    p = os.path.abspath(path).replace("\\", "/")
+    if not p.startswith("/"):
+        p = "/" + p
+    return f"file://{p}"
+
 
 def uri_to_path(uri: str) -> str:
     if not uri.startswith("file://"):
         return uri
-    path = uri[len("file://"):]
-    if len(path) > 2 and path[0] == "/" and path[2] == ":":
-        path = path[1:]
-    return path.replace("/", os.sep)
+    p = uri[len("file://"):]
+    if len(p) > 2 and p[0] == "/" and p[2] == ":":
+        p = p[1:]
+    return p.replace("/", os.sep)
+
 
 class LspClient:
     def __init__(self):
-        self._proc = None
+        self._proc: Optional[asyncio.subprocess.Process] = None
         self._id = 0
-        self._pending = {}
-        self._reader_task = None
+        self._pending: Dict[int, asyncio.Future] = {}
+        self._reader_task: Optional[asyncio.Task] = None
         self._version = 0
-        self._uri = None
-        self._language = None
-        self._diagnostics = {}
+        self._uri: Optional[str] = None
+        self._language: Optional[str] = None
+        self._diagnostics: Dict[str, List[Dict[str, Any]]] = {}
         self._diag_callback = None
+        self._send_lock = asyncio.Lock()
 
     @property
     def running(self) -> bool:
@@ -74,55 +56,67 @@ class LspClient:
         cmd = LANG_SERVERS.get(language)
         if not cmd:
             return False
-        import shutil
         exe = shutil.which(cmd[0])
         if not exe:
             return False
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                exe,
-                *cmd[1:],
+                exe, *cmd[1:],
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
         except Exception:
+            self._proc = None
             return False
+
         self._reader_task = asyncio.create_task(self._read_loop())
         self._language = language
-        await self._request("initialize", {
-            "processId": os.getpid(),
-            "rootUri": path_to_uri(root_path),
-            "capabilities": {
-                "textDocument": {
-                    "completion": {
-                        "completionItem": {"snippetSupport": False},
-                        "additionalTextEdits": True,
+        try:
+            await self._request("initialize", {
+                "processId": os.getpid(),
+                "rootUri": path_to_uri(root_path),
+                "capabilities": {
+                    "textDocument": {
+                        "completion": {
+                            "completionItem": {"snippetSupport": False},
+                            "additionalTextEdits": True,
+                        },
+                        "definition": {"dynamicRegistration": False},
+                        "hover": {"dynamicRegistration": False},
+                        "documentSymbol": {"dynamicRegistration": False},
+                        "publishDiagnostics": {"dynamicRegistration": False},
+                        "codeAction": {"dynamicRegistration": False},
+                        "rename": {"dynamicRegistration": False},
+                        "formatting": {"dynamicRegistration": False},
                     },
-                    "definition": {"dynamicRegistration": False},
-                    "hover": {"dynamicRegistration": False},
-                    "documentSymbol": {"dynamicRegistration": False},
-                    "publishDiagnostics": {"dynamicRegistration": False},
-                    "codeAction": {"dynamicRegistration": False},
-                    "rename": {"dynamicRegistration": False},
-                    "formatting": {"dynamicRegistration": False},
+                    "workspace": {
+                        "didChangeWatchedFiles": {"dynamicRegistration": False}
+                    },
                 },
-                "workspace": {"didChangeWatchedFiles": {"dynamicRegistration": False}},
-            },
-        })
-        self._notify("initialized", {})
-        return True
+            })
+            await self._notify("initialized", {})
+            return True
+        except Exception:
+            await self.stop()
+            return False
 
-    async def stop(self):
+    async def stop(self) -> None:
         if not self.running:
+            self._cleanup_after_stop()
             return
         try:
             await asyncio.wait_for(self._request("shutdown", None), timeout=2)
-            self._notify("exit", None)
+            await self._notify("exit", None)
         except Exception:
             pass
+
         if self._reader_task:
             self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except Exception:
+                pass
         if self._proc:
             try:
                 if self._proc.stdin:
@@ -137,43 +131,65 @@ class LspClient:
                     self._proc.kill()
                 except Exception:
                     pass
-        self._proc = None
-        self._pending.clear()
-        self._diagnostics.clear()
+        self._cleanup_after_stop()
 
-    def did_open(self, path: str, text: str):
+    def _cleanup_after_stop(self) -> None:
+        self._proc = None
+        self._reader_task = None
+        self._diagnostics.clear()
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.cancel()
+        self._pending.clear()
+
+    def did_open(self, path: str, text: str) -> None:
         self._uri = path_to_uri(path)
         self._version = 1
-        self._notify("textDocument/didOpen", {
-            "textDocument": {"uri": self._uri, "languageId": self._language, "version": self._version, "text": text},
+        self._schedule_notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": self._uri,
+                "languageId": self._language,
+                "version": self._version,
+                "text": text,
+            },
         })
 
-    def did_change(self, text: str):
+    def did_change(self, text: str) -> None:
         if not self._uri:
             return
         self._version += 1
-        self._notify("textDocument/didChange", {
+        self._schedule_notify("textDocument/didChange", {
             "textDocument": {"uri": self._uri, "version": self._version},
             "contentChanges": [{"text": text}],
         })
+
+    def _schedule_notify(self, method: str, params: Any) -> None:
+        """通知类消息异步发送，不阻塞 UI。"""
+        async def _run():
+            await self._notify(method, params)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_run())
+        except RuntimeError:
+            pass
 
     async def complete(self, line: int, col: int) -> List[Dict[str, Any]]:
         if not self._uri or not self.running:
             return []
         try:
-            result = await asyncio.wait_for(
-                self._request("textDocument/completion", {
+            result = await asyncio.wait_for(self._request(
+                "textDocument/completion",
+                {
                     "textDocument": {"uri": self._uri},
                     "position": {"line": line, "character": col},
-                }),
-                timeout=5,
-            )
+                },
+            ), timeout=5)
         except Exception:
             return []
         if not result:
             return []
         items = result if isinstance(result, list) else result.get("items", [])
-        completions = []
+        out = []
         for item in items:
             comp = {
                 "label": item.get("label", ""),
@@ -181,20 +197,20 @@ class LspClient:
             }
             if "additionalTextEdits" in item:
                 comp["additionalTextEdits"] = item["additionalTextEdits"]
-            completions.append(comp)
-        return completions
+            out.append(comp)
+        return out
 
     async def goto_definition(self, line: int, col: int) -> Optional[Dict[str, Any]]:
         if not self._uri or not self.running:
             return None
         try:
-            result = await asyncio.wait_for(
-                self._request("textDocument/definition", {
+            result = await asyncio.wait_for(self._request(
+                "textDocument/definition",
+                {
                     "textDocument": {"uri": self._uri},
                     "position": {"line": line, "character": col},
-                }),
-                timeout=5,
-            )
+                },
+            ), timeout=5)
         except Exception:
             return None
         if not result:
@@ -202,23 +218,24 @@ class LspClient:
         target = result[0] if isinstance(result, list) else result
         if "targetUri" in target:
             uri = target["targetUri"]
-            pos = target.get("targetSelectionRange", target.get("targetRange", {})).get("start", {"line": 0, "character": 0})
+            pos = (target.get("targetSelectionRange")
+                   or target.get("targetRange") or {}).get("start", {})
         else:
             uri = target.get("uri", "")
-            pos = target.get("range", {}).get("start", {"line": 0, "character": 0})
+            pos = target.get("range", {}).get("start", {})
         return {"uri": uri, "line": pos.get("line", 0), "col": pos.get("character", 0)}
 
     async def hover(self, line: int, col: int) -> Optional[str]:
         if not self._uri or not self.running:
             return None
         try:
-            result = await asyncio.wait_for(
-                self._request("textDocument/hover", {
+            result = await asyncio.wait_for(self._request(
+                "textDocument/hover",
+                {
                     "textDocument": {"uri": self._uri},
                     "position": {"line": line, "character": col},
-                }),
-                timeout=5,
-            )
+                },
+            ), timeout=5)
         except Exception:
             return None
         if not result:
@@ -226,7 +243,7 @@ class LspClient:
         contents = result.get("contents", {})
         if isinstance(contents, dict):
             return contents.get("value") or contents.get("kind")
-        elif isinstance(contents, list):
+        if isinstance(contents, list):
             return "\n".join(str(c) for c in contents)
         return str(contents)
 
@@ -234,77 +251,57 @@ class LspClient:
         if not self._uri or not self.running:
             return []
         try:
-            result = await asyncio.wait_for(
-                self._request("textDocument/documentSymbol", {
-                    "textDocument": {"uri": self._uri},
-                }),
-                timeout=5,
-            )
+            result = await asyncio.wait_for(self._request(
+                "textDocument/documentSymbol",
+                {"textDocument": {"uri": self._uri}},
+            ), timeout=5)
         except Exception:
             return []
-        if not result:
-            return []
-        symbols = []
-        for item in result:
-            if "range" in item:
-                name = item.get("name", "")
-                kind = item.get("kind", 0)
-                range_ = item.get("range", {}).get("start", {})
-                line = range_.get("line", 0)
-                col = range_.get("character", 0)
-                symbols.append({"name": name, "kind": kind, "line": line, "col": col})
-            else:
-                name = item.get("name", "")
-                kind = item.get("kind", 0)
-                location = item.get("location", {})
-                range_ = location.get("range", {}).get("start", {})
-                line = range_.get("line", 0)
-                col = range_.get("character", 0)
-                symbols.append({"name": name, "kind": kind, "line": line, "col": col})
-        return symbols
+        out = []
+        for item in result or []:
+            rng = item.get("range") or item.get("location", {}).get("range") or {}
+            start = rng.get("start", {})
+            out.append({
+                "name": item.get("name", ""),
+                "kind": item.get("kind", 0),
+                "line": start.get("line", 0),
+                "col": start.get("character", 0),
+            })
+        return out
 
     def get_diagnostics(self) -> List[Dict[str, Any]]:
         return self._diagnostics.get(self._uri, [])
 
-    def set_diagnostics_callback(self, callback):
-        self._diag_callback = callback
+    def set_diagnostics_callback(self, cb) -> None:
+        self._diag_callback = cb
 
     async def code_action(self, line: int, col: int) -> List[Dict[str, Any]]:
         if not self._uri or not self.running:
             return []
         try:
-            result = await asyncio.wait_for(
-                self._request("textDocument/codeAction", {
+            result = await asyncio.wait_for(self._request(
+                "textDocument/codeAction",
+                {
                     "textDocument": {"uri": self._uri},
                     "range": {
                         "start": {"line": line, "character": col},
                         "end": {"line": line, "character": col},
                     },
                     "context": {"diagnostics": self._diagnostics.get(self._uri, [])},
-                }),
-                timeout=5,
-            )
+                },
+            ), timeout=5)
         except Exception:
             return []
-        if not result:
-            return []
-        
-        # 保持原样返回，让 one-editor.py 去处理它
-        return result
+        return result or []
 
     async def execute_command(self, command: str, arguments: list):
-        """标准方法：请求 LSP 服务器执行命令（例如 clangd.applyFix）"""
         if not self._uri or not self.running:
-            return False
+            return None
         try:
-            result = await asyncio.wait_for(
-                self._request("workspace/executeCommand", {
-                    "command": command,
-                    "arguments": arguments
-                }),
-                timeout=5,
-            )
-            return result
+            return await asyncio.wait_for(self._request(
+                "workspace/executeCommand",
+                {"command": command, "arguments": arguments},
+            ), timeout=5)
         except Exception:
             return None
 
@@ -312,54 +309,57 @@ class LspClient:
         if not self._uri or not self.running:
             return None
         try:
-            result = await asyncio.wait_for(
-                self._request("textDocument/rename", {
+            return await asyncio.wait_for(self._request(
+                "textDocument/rename",
+                {
                     "textDocument": {"uri": self._uri},
                     "position": {"line": line, "character": col},
                     "newName": new_name,
-                }),
-                timeout=5,
-            )
+                },
+            ), timeout=5)
         except Exception:
             return None
-        return result
 
     async def format_document(self) -> List[Dict[str, Any]]:
         if not self._uri or not self.running:
             return []
         try:
-            result = await asyncio.wait_for(
-                self._request("textDocument/formatting", {
+            result = await asyncio.wait_for(self._request(
+                "textDocument/formatting",
+                {
                     "textDocument": {"uri": self._uri},
                     "options": {"tabSize": 4, "insertSpaces": True},
-                }),
-                timeout=5,
-            )
+                },
+            ), timeout=5)
         except Exception:
             return []
-        if not result:
-            return []
-        return result
+        return result or []
 
+    # ---------- 底层通信 ----------
     async def _request(self, method: str, params: Any):
         self._id += 1
         rid = self._id
-        future = asyncio.get_event_loop().create_future()
+        future = asyncio.get_running_loop().create_future()
         self._pending[rid] = future
-        self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        await self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
         return await future
 
-    def _notify(self, method: str, params: Any):
-        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+    async def _notify(self, method: str, params: Any) -> None:
+        await self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
-    def _send(self, msg: dict):
+    async def _send(self, msg: dict) -> None:
         if not self.running:
             return
-        body = json.dumps(msg).encode()
+        body = json.dumps(msg).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode()
-        self._proc.stdin.write(header + body)
+        async with self._send_lock:
+            try:
+                self._proc.stdin.write(header + body)
+                await self._proc.stdin.drain()
+            except Exception:
+                pass
 
-    async def _read_loop(self):
+    async def _read_loop(self) -> None:
         try:
             while self.running:
                 content_length = 0
@@ -371,7 +371,7 @@ class LspClient:
                     if not line:
                         break
                     if line.lower().startswith("content-length:"):
-                        content_length = int(line.split(":")[1].strip())
+                        content_length = int(line.split(":", 1)[1].strip())
                 if content_length == 0:
                     continue
                 body = await self._proc.stdout.readexactly(content_length)
@@ -385,13 +385,26 @@ class LspClient:
                     continue
                 rid = msg.get("id")
                 if rid is not None and rid in self._pending:
-                    future = self._pending.pop(rid)
-                    if not future.done():
+                    fut = self._pending.pop(rid)
+                    if not fut.done():
                         if "error" in msg:
-                            future.set_exception(Exception(msg["error"].get("message", "LSP error")))
+                            fut.set_exception(Exception(
+                                msg["error"].get("message", "LSP error")
+                            ))
                         else:
-                            future.set_result(msg.get("result"))
-        except (asyncio.CancelledError, ConnectionError):
-            pass
-        except Exception:
-            pass
+                            fut.set_result(msg.get("result"))
+        except asyncio.CancelledError:
+            raise
+        except asyncio.IncompleteReadError:
+            # 进程崩溃
+            self._proc = None
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.cancel()
+            self._pending.clear()
+        except (ConnectionError, Exception):
+            self._proc = None
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.cancel()
+            self._pending.clear()
