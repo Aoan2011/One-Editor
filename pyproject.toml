@@ -10,7 +10,7 @@ dependencies = [
     "textual>=0.60",
     "gitpython>=3.1",
     "charset-normalizer>=3.0",
-    "markdown>=3.5",
+    "markdown>=3.11.2",
     "aiohttp>=3.9",
 ]
 
