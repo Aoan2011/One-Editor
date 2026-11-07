@@ -9,7 +9,7 @@
 pytest>=8.0,<10.0
 pytest-asyncio>=1.4.1,<2.0
 pytest-cov>=7.1.0,<8.0
-pytest-xdist>=3.5,<4.0              # -n auto 并行跑测试
+pytest-xdist>=3.8.0,<4.0              # -n auto 并行跑测试
 
 # ---------- Lint / Format ----------
 ruff>=0.17.3,<1.0
